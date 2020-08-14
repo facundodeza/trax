@@ -14,10 +14,6 @@
 # limitations under the License.
 
 """Models defined in trax."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import gin
 
 from trax.models import atari_cnn
@@ -29,7 +25,9 @@ from trax.models import rnn
 from trax.models import transformer
 from trax.models.reformer import reformer
 from trax.models.research import bert
+from trax.models.research import rezero
 from trax.models.research import skipping_transformer
+from trax.models.research import transformer_no_enc_dec_attention
 
 
 # Ginify
@@ -53,6 +51,14 @@ ReformerLM = model_configure(reformer.ReformerLM)
 ReformerShortenLM = model_configure(reformer.ReformerShortenLM)
 ReformerNoEncDecAttention = model_configure(reformer.ReformerNoEncDecAttention)
 Resnet50 = model_configure(resnet.Resnet50)
+ReZeroTransformer = model_configure(
+    rezero.ReZeroTransformer)
+ReZeroTransformerDecoder = model_configure(
+    rezero.ReZeroTransformerDecoder)
+ReZeroTransformerEncoder = model_configure(
+    rezero.ReZeroTransformerEncoder)
+ReZeroTransformerLM = model_configure(
+    rezero.ReZeroTransformerLM)
 SkippingTransformerLM = model_configure(
     skipping_transformer.SkippingTransformerLM)
 Transformer = model_configure(transformer.Transformer)
@@ -60,7 +66,7 @@ TransformerDecoder = model_configure(transformer.TransformerDecoder)
 TransformerEncoder = model_configure(transformer.TransformerEncoder)
 TransformerLM = model_configure(transformer.TransformerLM)
 TransformerNoEncDecAttention = model_configure(
-    transformer.TransformerNoEncDecAttention)
+    transformer_no_enc_dec_attention.TransformerNoEncDecAttention)
 WideResnet = model_configure(resnet.WideResnet)
 Policy = model_configure(rl.Policy)
 PolicyAndValue = model_configure(rl.PolicyAndValue)

@@ -28,6 +28,7 @@ import numpy as np
 from t5.data import preprocessors as t5_processors
 from t5.data import sentencepiece_vocabulary as t5_spc_vocab
 from t5.data import utils as t5_utils
+from tensor2tensor.data_generators import text_encoder as t2t_text_encoder
 import tensorflow as tf   # pylint: disable=g-explicit-tensorflow-version-import
 import tensorflow_datasets as tfds
 import tensorflow_text as tf_text
@@ -205,8 +206,8 @@ def _train_and_eval_dataset(dataset_name, data_dir, eval_holdout_size,
   if eval_holdout_size > 0:
     holdout_percentage = int(eval_holdout_size * 100.0)
     train_percentage = 100 - holdout_percentage
-    train_split = tfds.Split.TRAIN.subsplit(tfds.percent[:train_percentage])
-    eval_split = tfds.Split.TRAIN.subsplit(tfds.percent[train_percentage:])
+    train_split = f'train[:{train_percentage}%]'
+    eval_split = f'train[{train_percentage}%:]'
   else:
     if tfds.Split.VALIDATION not in splits and 'test' not in splits:
       raise ValueError('We require a validation or test split in the dataset.')
@@ -223,6 +224,29 @@ def _train_and_eval_dataset(dataset_name, data_dir, eval_holdout_size,
   if info.supervised_keys:
     keys = ([info.supervised_keys[0]], [info.supervised_keys[1]])
   return train, valid, keys
+
+
+@gin.configurable()
+def TFDS(dataset_name, data_dir=None,  # pylint: disable=invalid-name
+         keys=None, train=True, eval_holdout_size=0):
+  """Returns an iterator of numpy arrays representing the dataset."""
+  data_dir = download_and_prepare(dataset_name, data_dir)
+
+  (train_data, eval_data, _) = _train_and_eval_dataset(
+      dataset_name, data_dir, eval_holdout_size)
+  dataset = train_data if train else eval_data
+
+  def select_from(example):
+    return tuple(example[k] for k in keys)
+
+  dataset = dataset.map(select_from)
+  dataset = dataset.repeat()
+
+  def gen(generator=None):
+    del generator
+    for example in fastmath.dataset_as_numpy(dataset):
+      yield example
+  return gen
 
 
 def _select_features(example, feature_list=None):
@@ -262,6 +286,132 @@ def _train_and_eval_dataset_v1(problem_name, data_dir,
   input_key = 'inputs' if 'inputs' in examples[0] else 'targets'
   supervised_keys = ([input_key], ['targets'])
   return train_dataset, eval_dataset, supervised_keys
+
+
+# Tokenization.
+def tokenize(stream, keys=None, vocab_type='subword',
+             vocab_file=None, vocab_dir=None, n_reserved_ids=0):
+  """Tokenize examples from the stream.
+
+  This function assumes that `stream` generates either strings or tuples/dicts
+  containing strings at some `keys`. This function maps these strings to
+  numpy arrays of integers -- the tokenized version of each string.
+
+  Args:
+    stream: A python generator yielding strings, tuples or dicts.
+    keys: which keys of the tuple/dict to tokenize (by default: all)
+    vocab_type: Type of vocabulary, one of: 'subword', 'sentencepiece', 'char'.
+    vocab_file: Name of the vocabulary file.
+    vocab_dir: Directory which contains the vocabulary file.
+    n_reserved_ids: An int, offset added so 0, ..., n_reserved_ids-1 are unused;
+      This is common for example when reserving the 0 for padding and 1 for EOS,
+      but it's only needed if these symbols are not already included (and thus
+      reserved) in the vocab_file.
+
+  Yields:
+    Examples from stream with strings at `keys` replaced by np.arrays of
+    integers -- the tokenized version of these strings.
+  """
+  vocab = _get_vocab(vocab_type, vocab_file, vocab_dir)
+  for example in stream:
+    if isinstance(example, (list, tuple)):
+      new_example = []
+      for i, x in enumerate(example):
+        if keys is None or i in keys:
+          new_example.append(np.array(vocab.encode(x)) + n_reserved_ids)
+        else:
+          new_example.append(x)
+      yield tuple(new_example)
+    elif isinstance(example, dict):
+      new_example = {}
+      for k in example.keys():
+        if keys is None or k in keys:
+          new_example[k] = np.array(vocab.encode(example[k])) + n_reserved_ids
+        else:
+          new_example[k] = example[k]
+      yield new_example
+    else:
+      yield np.array(vocab.encode(example)) + n_reserved_ids
+
+
+@gin.configurable()
+def Tokenize(keys=None, vocab_type='subword',  # pylint: disable=invalid-name
+             vocab_file=None, vocab_dir=None, n_reserved_ids=0):
+  """Returns a function that maps text to integer arrays; see `tokenize`."""
+  return lambda g: tokenize(  # pylint: disable=g-long-lambda
+      g, keys=keys, vocab_type=vocab_type, vocab_file=vocab_file,
+      vocab_dir=vocab_dir, n_reserved_ids=n_reserved_ids)
+
+
+def detokenize(x, vocab_type='subword', vocab_file=None, vocab_dir=None,
+               n_reserved_ids=0):
+  """Maps integer arrays to text; the opposite of `tokenize`.
+
+  In many cases (all char- and subword-type vocabularies and most sentencepiece
+  ones) the tokenization is invertible, so detokenize(tokenize(x)) = x. In some
+  more rare cases this can remove some spacing, but it is still often useful
+  to run detokenize to get a readable version for a tokenized string.
+
+  Args:
+    x: a list or numpy array of integers.
+    vocab_type: Type of vocabulary, one of: 'subword', 'sentencepiece', 'char'.
+    vocab_file: Name of the vocabulary file.
+    vocab_dir: Directory which contains the vocabulary file.
+    n_reserved_ids: An int, offset added so 0, ..., n_reserved_ids-1 are unused;
+      This is common for example when reserving the 0 for padding and 1 for EOS,
+      but it's only needed if these symbols are not already included (and thus
+      reserved) in the vocab_file.
+
+  Returns:
+    A string corresponding to the de-tokenized version of x.
+  """
+  vocab = _get_vocab(vocab_type, vocab_file, vocab_dir)
+  x_unreserved = np.array(x) - n_reserved_ids
+  return str(vocab.decode(x_unreserved.tolist()))
+
+
+def vocab_size(vocab_type='subword', vocab_file=None, vocab_dir=None,
+               n_reserved_ids=0):
+  """Returns the size of the vocabulary (number of symbols used).
+
+  This function can be used to set the size of the final layers of a model that
+  needs to predict symbols from a given vocabulary. More precisely, if this
+  function returns N then the last layer size should be set to at least N (it
+  can be more). Note that this function does take reserved ids into account.
+
+  Args:
+    vocab_type: Type of vocabulary, one of: 'subword', 'sentencepiece', 'char'.
+    vocab_file: Name of the vocabulary file.
+    vocab_dir: Directory which contains the vocabulary file.
+    n_reserved_ids: An int, offset added so 0, ..., n_reserved_ids-1 are unused.
+
+  Returns:
+    An integer, the number of symbols used (including reserved ids).
+  """
+  vocab = _get_vocab(vocab_type, vocab_file, vocab_dir)
+  return vocab.vocab_size + n_reserved_ids
+
+
+def _get_vocab(vocab_type='subword', vocab_file=None, vocab_dir=None):
+  """Gets the vocabulary object for tokenization; see tokenize for details."""
+  if vocab_type not in ['char', 'subword', 'sentencepiece']:
+    raise ValueError('vocab_type must be "subword", "char", or "sentencepiece" '
+                     f'but got {vocab_type}')
+
+  if vocab_type == 'char':
+    # Note that we set num_reserved_ids=0 below. We could instead pass
+    # the value n_reserved_ids from tokenize here -- ByteTextEncoder does
+    # exactly the same thing as tokenize above, ie., adds num_reserved_ids.
+    return t2t_text_encoder.ByteTextEncoder(num_reserved_ids=0)
+
+  vocab_dir = vocab_dir or 'gs://trax-ml/vocabs/'
+  path = os.path.join(vocab_dir, vocab_file)
+
+  if vocab_type == 'subword':
+    return t2t_text_encoder.SubwordTextEncoder(path)
+
+  assert vocab_type == 'sentencepiece'
+  return t5_spc_vocab.SentencePieceVocabulary(sentencepiece_model_file=path)
 
 
 # Makes the function accessible in gin configs, even with all args blacklisted.
@@ -560,6 +710,10 @@ def c4_bare_preprocess_fn(dataset,
   # Add EOS.
   dataset = add_eos_to_output_features(dataset, training)
 
+  # Truncate and then pad the examples -- all examples have the same shape.
+  dataset = truncate_dataset_on_len(dataset, training, sequence_length, True)
+  dataset = pad_dataset_to_length(dataset, training, sequence_length)
+
   return dataset
 
 
@@ -632,6 +786,8 @@ def truncate_dataset_on_len(dataset, training, len_map=None,
 def pad_dataset_to_length(dataset, training, len_map=None):
   """Pad features less than specified length to specified length."""
   del training
+  if len_map is None:
+    return dataset
   def pad_to_len(x):
     for key, max_len in len_map.items():
       x_shape = tf.shape(x[key])

@@ -18,7 +18,6 @@
 
 from trax import fastmath
 from trax.fastmath import numpy as jnp
-from trax.layers import base as layers
 
 
 class Optimizer(object):
@@ -36,7 +35,8 @@ class Optimizer(object):
   and slot updates for the whole tree of layers in the model.
   """
 
-  def __init__(self, learning_rate, clip_grad_norm=None, **init_opt_params):
+  def __init__(self, learning_rate=0.01, clip_grad_norm=None,
+               **init_opt_params):
     """Sets initial hyperparameter values for this optimizer.
 
     Takes initial optimizer parameters as keyword arguments. These values can
@@ -96,6 +96,14 @@ class Optimizer(object):
   def slots(self, slots):
     self._slots = slots
 
+  @property
+  def opt_params(self):
+    return self._init_opt_params
+
+  @opt_params.setter
+  def opt_params(self, opt_params):
+    self._init_opt_params = opt_params
+
   def tree_init(self, weight_tree):
     """Assembles node-local initializations into full-tree initialization.
 
@@ -153,7 +161,7 @@ class Optimizer(object):
 
   def _l2_norm(self, flat_list):
     """Returns the aggregate L2 norm of a list of tensors."""
-    if fastmath.backend_name() == 'jax':
+    if fastmath.is_backend(fastmath.Backend.JAX):
       norm = jnp.sqrt(sum(jnp.vdot(x, x) for x in flat_list))
     else:  # TODO(lukaszkaiser): add vdot to TF-numpy
       norm = jnp.sqrt(sum(jnp.sum(x*x) for x in flat_list))
@@ -204,4 +212,4 @@ def clip_grads(grad_tree, max_norm):
   """Clip gradients stored as a pytree of arrays to maximum norm `max_norm`."""
   norm = l2_norm(grad_tree)
   normalize = lambda g: jnp.where(norm < max_norm, g, g * (max_norm / norm))
-  return layers.nested_map(grad_tree, normalize)
+  return fastmath.nested_map(grad_tree, normalize)

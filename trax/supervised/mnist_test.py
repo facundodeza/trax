@@ -21,9 +21,9 @@ import itertools
 from absl.testing import absltest
 
 from trax import layers as tl
+from trax.data import inputs
+from trax.data import tf_inputs
 from trax.optimizers import adafactor
-from trax.supervised import inputs
-from trax.supervised import tf_inputs
 from trax.supervised import training
 
 
@@ -53,11 +53,12 @@ class MnistTest(absltest.TestCase):
         [tl.CrossEntropyLoss(), tl.Accuracy()],
         n_eval_batches=10)
 
-    training_session = training.Loop(mnist_model, task, eval_task=eval_task,
+    training_session = training.Loop(mnist_model, [task],
+                                     eval_tasks=[eval_task],
                                      eval_at=lambda step_n: step_n % 50 == 0)
 
     training_session.run(n_steps=1000)
-    self.assertEqual(training_session.current_step, 1000)
+    self.assertEqual(training_session.step, 1000)
 
 
 def _mnist_dataset():

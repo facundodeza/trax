@@ -52,7 +52,7 @@ class Serial(base.Layer):
   """
 
   def __init__(self, *sublayers, name=None, sublayers_to_print=None):
-    super(Serial, self).__init__(
+    super().__init__(
         name=name, sublayers_to_print=sublayers_to_print)
 
     sublayers = _ensure_flat(sublayers)
@@ -61,8 +61,8 @@ class Serial(base.Layer):
 
     if sublayers:
       self._n_in, self._n_out = self._n_inputs_n_outputs(sublayers)
-      self._weights = tuple(l.weights for l in sublayers)
-      self._state = tuple(l.state for l in sublayers)
+      self._weights = tuple(None for l in sublayers)
+      self._state = tuple(None for l in sublayers)
 
   def forward(self, xs):
     self._validate_forward_inputs(xs)
@@ -88,7 +88,7 @@ class Serial(base.Layer):
       outputs, s = layer.pure_fn(inputs, w, s, rng, use_cache=True)
       stack = _outputs_onto_stack(layer, outputs, stack)
       new_state.append(s)
-    self._state = new_state
+    self.state = new_state
     return stack
 
   # pylint: disable=protected-access
@@ -107,39 +107,9 @@ class Serial(base.Layer):
 
       weights.append(weights_or_cache_marker)
       states.append(state_or_cache_marker)
-    self._state = states
-    self._weights = weights
+    self.state = states
+    self.weights = weights
   # pylint: enable=protected-access
-
-  @base.Layer.weights.setter
-  def weights(self, weights):
-    """Recursively sets weights on this layer and all sublayers."""
-    if isinstance(weights, dict) and weights == base.GET_WEIGHTS_FROM_CACHE:
-      return
-    self._weights = weights
-    n_layers = self._n_layers
-    if len(weights) != n_layers:
-      raise ValueError(
-          f'Number of weight elements ({len(weights)}) does not equal '
-          f'number of sublayers ({n_layers}).')
-    for layer, sublayer_weights in zip(self.sublayers, weights):
-      if sublayer_weights is not base.GET_WEIGHTS_FROM_CACHE:
-        layer.weights = sublayer_weights
-
-  @base.Layer.state.setter
-  def state(self, state):
-    """Recursively sets non-param state on this layer and all sublayers."""
-    if isinstance(state, dict) and state == base.GET_STATE_FROM_CACHE:
-      return
-    self._state = state
-    n_layers = self._n_layers
-    if n_layers != 1 and len(state) != n_layers:
-      raise ValueError(
-          f'Number of state elements ({len(state)}) does not equal '
-          f'number of sublayers ({n_layers}).')
-    for layer, sublayer_state in zip(self.sublayers, state):
-      if sublayer_state is not base.GET_STATE_FROM_CACHE:
-        layer.state = sublayer_state
 
   def _n_inputs_n_outputs(self, layers):
     del self
@@ -202,14 +172,14 @@ class Parallel(base.Layer):
       A new layer in which each of the given sublayers applies to its
       corresponding span of elements in the dataflow stack.
     """
-    super(Parallel, self).__init__(name=name)
+    super().__init__(name=name)
     sublayers = self._validate(sublayers)
     self._n_layers = len(sublayers)
     self._sublayers = sublayers
     self._n_in = sum(l.n_in for l in sublayers)
     self._n_out = sum(l.n_out for l in sublayers)
-    self._weights = tuple(l.weights for l in sublayers)
-    self._state = tuple(l.state for l in sublayers)
+    self._weights = tuple(None for l in sublayers)
+    self._state = tuple(None for l in sublayers)
 
   def forward(self, inputs):
     n_layers, layers = self._n_layers, self.sublayers
@@ -243,7 +213,7 @@ class Parallel(base.Layer):
         outputs.extend(sub_outputs)
       new_state.append(sub_state)
     output = outputs[0] if self.n_out == 1 else tuple(outputs)
-    self._state = tuple(new_state)
+    self.state = tuple(new_state)
     return output
 
   def init_weights_and_state(self, input_signature):
@@ -253,28 +223,8 @@ class Parallel(base.Layer):
              in zip(self.sublayers, sublayer_signatures)]
     if inits:
       weights, state = tuple(zip(*inits))
-      self._state = state
-      self._weights = weights
-
-  @base.Layer.weights.setter
-  def weights(self, weights):
-    """Recursively sets weights on this layer and all sublayers."""
-    if isinstance(weights, dict) and weights == base.GET_WEIGHTS_FROM_CACHE:
-      return
-    self._weights = weights
-    assert len(weights) == self._n_layers
-    for layer, sublayer_weights in zip(self.sublayers, weights):
-      layer.weights = sublayer_weights
-
-  @base.Layer.state.setter
-  def state(self, state):
-    """Recursively sets non-param state on this layer and all sublayers."""
-    if isinstance(state, dict) and state == base.GET_STATE_FROM_CACHE:
-      return
-    self._state = state
-    assert len(state) == self._n_layers
-    for layer, sublayer_state in zip(self.sublayers, state):
-      layer.state = sublayer_state
+      self.state = state
+      self.weights = weights
 
   def _validate(self, layers):
     if not layers or len(layers) < 2:
@@ -324,7 +274,7 @@ class Concatenate(base.Layer):
 
   def __init__(self, n_items=2, axis=-1):
     name = 'Concatenate' if axis == -1 else f'Concatenate_axis{axis}'
-    super(Concatenate, self).__init__(n_in=n_items, name=name)
+    super().__init__(n_in=n_items, name=name)
     self._n_items = n_items
     self._axis = axis
 
@@ -336,12 +286,54 @@ class Split(base.Layer):
   """Splits the input into n items along an axis."""
 
   def __init__(self, n_items=2, axis=-1):
-    super(Split, self).__init__(n_out=n_items)
+    super().__init__(n_out=n_items)
     self._n_items = n_items
     self._axis = axis
 
   def forward(self, inputs):
     return tuple(jnp.split(inputs, self._n_items, self._axis))
+
+
+def _scan(f, xs, init_value, axis=0, remat=False):
+  """Scans the f over the given axis of xs.
+
+  In pseudo-python, the scan function would look as follows:
+
+  def scan(f, xs, init_value, axis):
+    xs  = [xs[..., i, ...] for i in range(xs.shape[axis])]
+    cur_value = init_value
+    ys = []
+    for x in xs:
+      y, cur_value = f(x, cur_value)
+      ys.append(y)
+    return np.stack(ys, axis), cur_value
+
+  Args:
+    f: function (x, carry) -> (y, new_carry)
+    xs: tensor, x will be xs slices on axis
+    init_value: tensor, initial value of the carry-over
+    axis: int, the axis on which to slice xs
+    remat: whether to re-materialize f
+
+  Returns:
+    A pair (ys, last_value) as described above.
+  """
+  def swapaxes(x):
+    transposed_axes = list(range(len(x.shape)))
+    transposed_axes[axis] = 0
+    transposed_axes[0] = axis
+    return jnp.transpose(x, axes=transposed_axes)
+  if axis != 0:
+    xs = fastmath.nested_map(swapaxes, xs)
+  def transposed_f(c, x):
+    y, d = f(x, c)
+    return d, y
+  if remat:
+    transposed_f = fastmath.remat(transposed_f)
+  last_value, ys = fastmath.scan(transposed_f, init_value, xs)
+  if axis != 0:
+    ys = fastmath.nested_map(swapaxes, ys)
+  return ys, last_value
 
 
 class Scan(base.Layer):
@@ -376,11 +368,13 @@ class Scan(base.Layer):
   """
 
   def __init__(self, layer, axis=0, n_carry=1, remat=False):
-    super(Scan, self).__init__(n_in=layer.n_in, n_out=layer.n_out)
+    super().__init__(n_in=layer.n_in, n_out=layer.n_out)
     self._sublayers = [layer]
     self._n_carry = n_carry
     self._axis = axis
     self._remat = remat
+    self._weights = (None,)
+    self._state = (None,)
 
   @property
   def sublayer(self):
@@ -388,7 +382,7 @@ class Scan(base.Layer):
     return self._sublayers[0]
 
   def forward(self, inputs):
-    weights = self.weights
+    weights = self.weights[0]
     if isinstance(inputs, list):
       inputs = tuple(inputs)  # so that inputs structure matches outputs
     n_carry = self._n_carry
@@ -404,13 +398,13 @@ class Scan(base.Layer):
 
     if n_carry > 0:
       xs = inputs[:-n_carry]  # Split input stack into inputs and carry.
-      init = (inputs[-n_carry:], self.state)
+      init = (inputs[-n_carry:], self.state[0])
     else:
-      xs, init = inputs, ([], self.state)
-    ys, (carry, new_state) = fastmath.scan(scannable_fn, xs, init,
-                                           axis=self._axis, remat=self._remat)
+      xs, init = inputs, ([], self.state[0])
+    ys, (carry, new_state) = _scan(scannable_fn, xs, init,
+                                   axis=self._axis, remat=self._remat)
     res = ys + carry if n_carry > 0 else ys
-    self.state = new_state
+    self.state = (new_state,)
     return res  # Put outputs and carry back on stack.
 
   def init_weights_and_state(self, input_signature):
@@ -424,8 +418,8 @@ class Scan(base.Layer):
         layer_sig = ShapeDtype(_shape_without_axis(input_signature, self._axis),
                                input_signature.dtype)
       weights, state = self.sublayer.init(layer_sig)
-      self._state = state
-      self._weights = weights
+      self.state = (state,)
+      self.weights = (weights,)
     else:
       xs = input_signature[:-n_carry]
       init = input_signature[-n_carry:]
@@ -433,10 +427,11 @@ class Scan(base.Layer):
                    for x in xs]
       layer_signature = tuple(xs_slices + list(init))
       weights, state = self.sublayer.init(layer_signature, use_cache=True)
-      self._state = state
-      self._weights = weights
+      self.state = (state,)
+      self.weights = (weights,)
 
 
+# pylint: disable=invalid-name
 def Branch(*layers, name='Branch'):
   """Combinator that applies a list of layers in parallel to copies of inputs.
 
@@ -458,11 +453,11 @@ def Branch(*layers, name='Branch'):
   one argument, which it leaves unchanged. (It acts as a one-arg no-op.)
 
   Args:
-    *layers: list of layers
+    *layers: List of layers.
     name: Descriptive name for this layer.
 
   Returns:
-    the branch layer
+    A branch layer built from the given sublayers.
   """
   if len(layers) == 1:
     return layers[0]
@@ -644,7 +639,7 @@ class Cache(base.Layer):
   """Applies a layer on the first run and returns the outputs on next calls."""
 
   def __init__(self, layer):
-    super(Cache, self).__init__(n_in=layer.n_in, n_out=layer.n_out)
+    super().__init__(n_in=layer.n_in, n_out=layer.n_out)
     self._sublayers = [layer]
 
   @property
@@ -652,8 +647,26 @@ class Cache(base.Layer):
     """Returns the unique sublayer managed by this layer."""
     return self._sublayers[0]
 
+  @property
+  def state(self):
+    """Returns a tuple containing this layer's state; may be empty."""
+    return self._state
+
+  @state.setter
+  def state(self, state):
+    """Recursively sets state on this layer and all sublayers."""
+    if isinstance(state, dict) and state == base.GET_STATE_FROM_CACHE:
+      return
+    self._state = state
+    self.sublayer.state = state[1]
+
+  def init_weights_and_state(self, input_signature):
+    weights, layer_state = self.sublayer.init(input_signature, use_cache=True)
+    self.state = ((), layer_state)
+    self._weights = (weights,)
+
   def forward(self, inputs):
-    state, weights = self.state, self.weights
+    state, weights = self.state, self.weights[0]
     if state[0] is ():  # pylint: disable=literal-comparison
       res, layer_state = self.sublayer.pure_fn(
           inputs, weights, state[1], self.rng)
@@ -661,11 +674,6 @@ class Cache(base.Layer):
       return res
     else:
       return state[0]
-
-  def init_weights_and_state(self, input_signature):
-    weights, layer_state = self.sublayer.init(input_signature, use_cache=True)
-    self.state = ((), layer_state)
-    self._weights = weights
 
 
 class BatchLeadingAxes(base.Layer):
@@ -681,9 +689,11 @@ class BatchLeadingAxes(base.Layer):
   """
 
   def __init__(self, layer, n_last_axes_to_keep=1):
-    super(BatchLeadingAxes, self).__init__(n_in=layer.n_in, n_out=layer.n_out)
+    super().__init__(n_in=layer.n_in, n_out=layer.n_out)
     self._sublayers = [layer]
     self._n_last_axes_to_keep = n_last_axes_to_keep
+    self._weights = (None,)
+    self._state = (None,)
 
   @property
   def sublayer(self):
@@ -695,14 +705,14 @@ class BatchLeadingAxes(base.Layer):
     batched_shape = [-1] + list(inputs.shape[-self._n_last_axes_to_keep:])
     inputs = jnp.reshape(inputs, batched_shape)
     res, layer_state = self.sublayer.pure_fn(
-        inputs, self.weights, self.state, self.rng)
-    self.state = layer_state
+        inputs, self.weights[0], self.state[0], self.rng)
+    self.state = (layer_state,)
     return jnp.reshape(res, batched_axes_shape + list(res.shape[1:]))
 
   def init_weights_and_state(self, input_signature):
     weights, layer_state = self.sublayer.init(input_signature, use_cache=True)
-    self.state = layer_state
-    self._weights = weights
+    self.state = (layer_state,)
+    self.weights = (weights,)
 
 
 # All module-private helper functions are below.
@@ -764,17 +774,10 @@ def _split_rngs(rng, n_copies):
 
 def _inputs_from_stack(layer, stack, n_in=None):
   """Returns the correct number/format of inputs for the given layer."""
-  is_stack_just_one_item = (_count_items(stack) == 1)
-  if isinstance(stack, (list, tuple)) and is_stack_just_one_item:
-    stack = stack[0]
   if n_in is None:
     n_in = layer.n_in
-  if n_in == 1 and is_stack_just_one_item:
-    return stack
-  elif n_in == 1:
-    return stack[0]
-  else:
-    return stack[:n_in]
+  stack = _make_tuple(stack)
+  return _make_singleitem_or_original(stack[:n_in])
 
 
 def _outputs_onto_stack(layer, outputs, stack, n_in=None, n_out=None):
@@ -783,16 +786,25 @@ def _outputs_onto_stack(layer, outputs, stack, n_in=None, n_out=None):
     n_in = layer.n_in
   if n_out is None:
     n_out = layer.n_out
-  if n_in < _count_items(stack):
-    if n_out == 1:
-      outputs = (outputs,)
-    return outputs + tuple(stack[n_in:])
+  outputs = _make_tuple(outputs)
+  stack = _make_tuple(stack)
+  return _make_singleitem_or_original(outputs + stack[n_in:])
+
+
+def _make_tuple(xs):
+  """Returns a tuple from a list, a tuple, or a single element."""
+  if isinstance(xs, (list, tuple)):
+    return tuple(xs)
   else:
-    return outputs  # NOTE: can be single value or tuple.
+    return (xs,)
 
 
-def _count_items(xs):
-  return len(xs) if isinstance(xs, (list, tuple)) else 1
+def _make_singleitem_or_original(xs):
+  """Returns a single element if possible, or the original list/tuple if not."""
+  if isinstance(xs, (list, tuple)) and len(xs) == 1:
+    return xs[0]
+  else:
+    return xs
 
 
 def _shape_without_axis(x, axis):

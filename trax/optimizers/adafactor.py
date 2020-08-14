@@ -24,7 +24,7 @@ class Adafactor(opt_base.Optimizer):
   """Adafactor optimizer."""
 
   def __init__(self,
-               learning_rate,
+               learning_rate=0.05,
                factored=True,
                multiply_by_parameter_scale=True,
                do_clipping=True,
@@ -62,7 +62,7 @@ class Adafactor(opt_base.Optimizer):
     self._do_clipping = do_clipping
     self._do_momentum = do_momentum
     # Dynamically configurable parameters will be passed to the update function.
-    super(Adafactor, self).__init__(
+    super().__init__(
         learning_rate=learning_rate,
         beta1=beta1,
         decay_rate=decay_rate,

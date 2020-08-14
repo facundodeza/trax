@@ -115,7 +115,7 @@ def _tf_to_np(inp):
 
   def f(x):
     if isinstance(x, (tf.Tensor, tf.IndexedSlices)):
-      return tf_np.array(x, copy=False)
+      return tf_np.asarray(x)
     else:
       return x
 
@@ -367,8 +367,8 @@ def eval_on_shapes(f, static_argnums=()):
 
   Returns:
     A function whose input arguments can be either the same as `f`'s or only
-    their shapes/dtypes represented by `TensorSpec`, and whose return values are
-    `TensorSpec`s with the same nested structure as `f`'s return values.
+    their shapes/dtypes represented by `tf.TensorSpec`, and whose return values
+    are `tf.TensorSpec`s with the same nested structure as `f`'s return values.
   """
   # TODO(wangpeng): tf.function could add a knob to turn off materializing the
   #   graph, so that we don't waste computation and memory when we just want
@@ -484,8 +484,9 @@ def conv(inp,
                      "data format (%s)" % (input_spec, filter_spec))
   # No type promotion in order to prevent accidentally doing more expensive
   # computation.
-  inp = tf_np.asarray(inp)
-  fltr = tf_np.asarray(fltr)
+  dtype = tf_np.result_type(inp, fltr)
+  inp = tf_np.asarray(inp, dtype)
+  fltr = tf_np.asarray(fltr, dtype)
   return tf_np.asarray(
       tf.nn.convolution(
           input=inp.data,
@@ -604,6 +605,98 @@ def sort_key_val(keys, values, dimension=-1):
   return keys, values
 
 
+def scan(f, init, xs, length=None, reverse=False):
+  """Scan a function over leading array axes while carrying along state.
+
+  See the docstring of `jax.lax.scan`
+  (https://jax.readthedocs.io/en/latest/_autosummary/jax.lax.scan.html) for
+  details.
+
+  Args:
+    f: a Python function to be scanned of type ``c -> a -> (c, b)``, meaning
+      that ``f`` accepts two arguments where the first is a value of the loop
+      carry and the second is a slice of ``xs`` along its leading axis, and that
+      ``f`` returns a pair where the first element represents a new value for
+      the loop carry and the second represents a slice of the output. Note that
+      the input and output carry must have the same dtype.
+    init: an initial loop carry value of type ``c``, which can be a scalar,
+      array, or any pytree (nested Python tuple/list/dict) thereof, representing
+      the initial loop carry value. This value must have the same structure as
+      the first element of the pair returned by ``f``.
+    xs: the value of type ``[a]`` over which to scan along the leading axis,
+      where ``[a]`` can be an array or any pytree (nested Python
+      tuple/list/dict) thereof with consistent leading axis sizes.
+    length: optional integer specifying the number of loop iterations, which
+      must agree with the sizes of leading axes of the arrays in ``xs`` (but can
+      be used to perform scans where no input ``xs`` are needed).
+    reverse: optional boolean specifying whether to run the scan iteration
+      forward (the default) or in reverse, equivalent to reversing the leading
+      axes of the arrays in both ``xs`` and in ``ys``.
+
+  Returns:
+    A pair of type ``(c, [b])`` where the first element represents the final
+    loop carry value and the second element represents the stacked outputs of
+    the second output of ``f`` when scanned over the leading axis of the inputs.
+  """
+  init, xs = tf.nest.map_structure(
+      lambda x: tf_np.asarray(x) if x is not None else None, (init, xs))
+  init, xs = _np_to_tf((init, xs))
+  def get_length(x):
+    if x is None:
+      return None
+    if x.shape.rank == 0:
+      raise ValueError("Some array in `xs` doesn't have a leading dimension")
+    return x.shape[0]
+  lengths = tf.nest.flatten(tf.nest.map_structure(get_length, xs))
+  for l in lengths:
+    if l is not None:
+      if length is None:
+        length = l
+      elif length != l:
+        raise ValueError("There are two different leading-dimension lengths: "
+                         f"{length} and {l}")
+  if length is None:
+    raise ValueError(
+        "Can't determine length. Please set the `length` argument.")
+  xs_ta = tf.nest.map_structure(
+      lambda t: (tf.TensorArray(t.dtype, size=0, dynamic_size=True).unstack(t)  # pylint: disable=g-long-lambda
+                 if t is not None else None),
+      xs)
+  def body(i, carry, ys_ta):
+    if reverse:
+      i_ = length - 1 - i
+    else:
+      i_ = i
+    xs = tf.nest.map_structure(
+        lambda x_ta: x_ta.read(i_) if x_ta is not None else None, xs_ta)
+    carry, ys = _np_to_tf(f(*_tf_to_np((carry, xs))))
+    ys_ta = tf.nest.map_structure(
+        lambda y_ta, y: (y_ta.write(i_, y) if y is not None else y_ta),
+        ys_ta, ys)
+    i = i + 1
+    return i, carry, ys_ta
+  xs_spec = tf.nest.map_structure(
+      lambda t: tf.TensorSpec(t.shape[1:], t.dtype) if t is not None else None,
+      xs)
+  _, ys_spec = eval_on_shapes(f)(init, xs_spec)
+  # ys_ta can't contain None because tf.while_loop doesn't allow None in
+  # loop_vars.
+  ys_ta = tf.nest.map_structure(
+      lambda y: tf.TensorArray(y.dtype if y is not None else tf.float32, size=0,  # pylint: disable=g-long-lambda
+                               dynamic_size=True),
+      ys_spec)
+  _, carry, ys_ta = tf.while_loop(
+      lambda i, *_: i < length, body, (0, init, ys_ta))
+  def _stack(a, spec):
+    if spec is None:
+      return None
+    a = a.stack()
+    a.set_shape((length,) + a.shape[1:])
+    return a
+  ys = tf.nest.map_structure(_stack, ys_ta, ys_spec)
+  return _tf_to_np((carry, ys))
+
+
 # Use int64 instead of int32 to avoid TF's "int32 problem"
 _RNG_KEY_DTYPE = np.int64
 
@@ -685,8 +778,8 @@ def stateless_split(seed, num=2):
   0.9002807 ], dtype=float32)>
 
   Args:
-    seed: an RNG seed (a tensor with shape [2] and dtype `int32` or
-      `int64`). (When using XLA, only `int32` is allowed.)
+    seed: an RNG seed (a tensor with shape [2] and dtype `int32` or `int64`).
+      (When using XLA, only `int32` is allowed.)
     num: optional, a positive integer or scalar tensor indicating the number of
       seeds to produce (default 2).
 
@@ -1191,3 +1284,19 @@ def gpu_devices(devices=None):
 
 def accelerators(devices=None):
   return tpu_devices(devices) or gpu_devices(devices)
+
+
+# TODO(agarwal): support axes arguments.
+def vmap(f):
+  """Returns a function that maps `f` over first dimension of inputs."""
+
+  def _f(*args):
+    tf_args = tf.nest.map_structure(lambda x: tf_np.asarray(x).data, args)
+
+    def tf_f(x):
+      return f(*x)
+
+    outputs = tf.vectorized_map(tf_f, tf_args)
+    return tf.nest.map_structure(tf_np.asarray, outputs)
+
+  return _f

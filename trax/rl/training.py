@@ -25,6 +25,7 @@ import gin
 import numpy as np
 import tensorflow as tf
 
+from trax import data
 from trax import fastmath
 from trax import jaxboard
 from trax import layers as tl
@@ -277,7 +278,7 @@ class PolicyTrainer(RLTrainer):
       output_dir: Path telling where to save outputs (evals and checkpoints).
       **kwargs: arguments for the superclass RLTrainer.
     """
-    super(PolicyTrainer, self).__init__(
+    super().__init__(
         task,
         n_eval_episodes=n_eval_episodes,
         output_dir=output_dir,
@@ -292,7 +293,7 @@ class PolicyTrainer(RLTrainer):
     self._policy_dist = distributions.create_distribution(task.action_space)
 
     # Inputs to the policy model are produced by self._policy_batches_stream.
-    self._policy_inputs = supervised.Inputs(
+    self._policy_inputs = data.inputs.Inputs(
         train_stream=lambda _: self.policy_batches_stream())
 
     policy_model = functools.partial(
@@ -351,7 +352,7 @@ class PolicyTrainer(RLTrainer):
     pred = pred[0, -1, :]
     sample = self._policy_dist.sample(pred, temperature=temperature)
     result = (sample, pred)
-    if fastmath.backend_name() == 'jax':
+    if fastmath.is_backend(fastmath.Backend.JAX):
       result = fastmath.nested_map(lambda x: x.copy(), result)
     return result
 

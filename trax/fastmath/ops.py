@@ -30,11 +30,20 @@ You can select which one to use (e.g., for  debugging) with `use_backend`.
 """
 
 import contextlib
+import enum
 
 import gin
 from trax.fastmath.jax import JAX_BACKEND
 from trax.fastmath.numpy import NUMPY_BACKEND
 from trax.fastmath.tf import TF_BACKEND
+
+
+@enum.unique
+class Backend(enum.Enum):
+  JAX = 'jax'
+  TFNP = 'tensorflow-numpy'
+  NUMPY = 'numpy'
+
 
 # For numpy and random modules, we need to call "backend()" lazily, only when
 # the function is called -- so that it can be set by gin configs.
@@ -127,6 +136,42 @@ def scan(*args, **kwargs):
   return backend()['scan'](*args, **kwargs)
 
 
+def fori_loop(lower, upper, body_fn, init_val):
+  """Loop from `lower` to `upper` running `body_fn` starting from `init_val`.
+
+  The semantics of `fori_loop` is as follows::
+
+    def fori_loop(lower, upper, body_fn, init_val):
+      val = init_val
+      for i in range(lower, upper):
+        val = body_fn(i, val)
+      return val
+
+  Args:
+    lower: an integer representing the loop index lower bound (inclusive)
+    upper: an integer representing the loop index upper bound (exclusive)
+    body_fn: function of type `(int, a) -> a`.
+    init_val: initial loop carry value of type `a`.
+
+  Returns:
+    Loop value from the final iteration.
+  """
+  if 'fori_loop' in backend():
+    return backend()['fori_loop'](lower, upper, body_fn, init_val)
+  # Use scan otherwise.
+  def scanned_fn(loop_carry, _):
+    i, x = loop_carry
+    return (i + 1, body_fn(i, x)), None
+  (_, result), _ = scan(
+      scanned_fn, (lower, init_val), None, length=upper - lower)
+  return result
+
+
+def remat(*args, **kwargs):
+  """Recompute everything in the backward pass to same memory."""
+  return backend()['remat'](*args, **kwargs)
+
+
 def cond(*args, **kwargs):
   """Conditional computation to run on accelerators."""
   return backend()['cond'](*args, **kwargs)
@@ -157,6 +202,11 @@ def disable_jit():
   """Disables JIT-compilation; helpful for debugging."""
   global _disable_jit
   _disable_jit = True
+
+
+def vmap(*args, **kwargs):
+  """Vectorizes the specified function (returns a function)."""
+  return backend()['vmap'](*args, **kwargs)
 
 
 def grad(*args, **kwargs):
@@ -211,7 +261,9 @@ def abstract_eval(*args, **kwargs):
 
 def dataset_as_numpy(*args, **kwargs):
   """Convert a tf.data.Dataset to a stream of numpy arrays."""
-  return backend()['dataset_as_numpy'](*args, **kwargs)
+  if 'dataset_as_numpy' in backend():
+    return backend()['dataset_as_numpy'](*args, **kwargs)
+  return JAX_BACKEND['dataset_as_numpy'](*args, **kwargs)
 
 
 def device_count(*args, **kwargs):
@@ -221,34 +273,75 @@ def device_count(*args, **kwargs):
 
 # Backend selection functions.
 
+override_backend = None
+default_backend = None
+_backend_dict = {
+    Backend.JAX: JAX_BACKEND,
+    Backend.NUMPY: NUMPY_BACKEND,
+    Backend.TFNP: TF_BACKEND,
+}
 
-override_backend_name = None
+
+def _assert_valid_backend_name(name):
+  for backend_ in Backend:
+    if backend_.value == name:
+      return
+  raise ValueError(f'No backend with name {name}')
+
+
+def set_backend(name):
+  """Sets the default backend to use in Trax."""
+  if name:
+    _assert_valid_backend_name(name)
+  global default_backend
+  default_backend = name
+
+
+def _get_backend_from_string(name_str):
+  # name is a string.
+  for backend_ in Backend:
+    if backend_.value == name_str:
+      return _backend_dict[backend_]
+  return JAX_BACKEND
 
 
 @gin.configurable()
 def backend(name='jax'):
-  """Return the backend used to provide fastmath ops ('tf' or 'jax')."""
-  name = name if not override_backend_name else override_backend_name
-  if name == 'numpy':
-    return NUMPY_BACKEND
-  elif name == 'tf':
-    return TF_BACKEND
-  return JAX_BACKEND
+  """Returns the backend used to provide fastmath ops ('tf' or 'jax')."""
+  if override_backend:
+    return _get_backend_from_string(override_backend)
+
+  if default_backend:
+    return _get_backend_from_string(default_backend)
+
+  if isinstance(name, Backend):
+    return _backend_dict[name]
+
+  # name is a string.
+  return _get_backend_from_string(name)
 
 
 @contextlib.contextmanager
 def use_backend(name):
   """Call fastmath functions with a specified backend."""
-  global override_backend_name
-  prev_name = override_backend_name
-  override_backend_name = name
+  if isinstance(name, Backend):
+    name = name.value
+
+  _assert_valid_backend_name(name)
+  global override_backend
+  prev_name_or_backend = override_backend
+  override_backend = name
   # Run the decorated function in try-finally in case it throws, e.g. for tests.
   try:
     yield
   finally:
-    override_backend_name = prev_name
+    override_backend = prev_name_or_backend
 
 
 def backend_name():
   """Returns the name of the backend curently in use ('tf' or 'jax')."""
   return backend()['name']
+
+
+def is_backend(backend_):
+  return backend()['name'] == backend_.value

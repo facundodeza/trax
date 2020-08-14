@@ -35,6 +35,7 @@ from trax.supervised import trainer_lib
 from trax.tf_numpy import numpy as tf_np
 
 FLAGS = flags.FLAGS
+Backend = fastmath.Backend
 
 
 # TODO(afrozm): Share between trainer.py and rl_trainer.py
@@ -99,12 +100,13 @@ def _output_dir_or_default():
 
 # TODO(afrozm): Share between trainer.py and rl_trainer.py
 def _jax_and_tf_configure_for_devices():  # pylint: disable=missing-function-docstring
+  jax.config.enable_omnistaging()
   if FLAGS.use_tpu:
     jax.config.update('jax_platform_name', 'tpu')
     jax.config.update('jax_xla_backend', FLAGS.jax_xla_backend)
     jax.config.update('jax_backend_target', FLAGS.jax_backend_target)
-  if (FLAGS.enable_eager_execution and
-      fastmath.backend_name() in ('numpy', 'jax')):
+  if (FLAGS.enable_eager_execution and (fastmath.is_backend(Backend.NUMPY) or
+                                        fastmath.is_backend(Backend.JAX))):
     # Numpy backend doesn't benefit from having the input pipeline run on GPU,
     # and jax backend has GPU memory contention if TF uses the GPU. Gin must be
     # set up first before determining the backend.
@@ -153,8 +155,11 @@ def main(_):
   _gin_parse_configs()
   _jax_and_tf_configure_for_devices()
 
+  if FLAGS.disable_jit:
+    fastmath.disable_jit()
+
   output_dir = _output_dir_or_default()
-  if FLAGS.use_tpu and fastmath.backend_name() == 'tf':
+  if FLAGS.use_tpu and fastmath.is_backend(Backend.TFNP):
     _train_using_tf(output_dir)
   else:
     trainer_lib.train(output_dir=output_dir)

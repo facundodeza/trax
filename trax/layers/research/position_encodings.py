@@ -33,7 +33,7 @@ class AxialPositionalEncoding(layer_base.Layer):
   def __init__(self, shape=(64, 64, 3), d_embs=(384, 384, 256),
                kernel_initializer=init.RandomNormalInitializer(1.0),
                dropout=0.0, dropout_broadcast_dims=(), mode='train'):
-    super(AxialPositionalEncoding, self).__init__()
+    super().__init__()
     self._kernel_initializer = kernel_initializer
     assert len(shape) == len(d_embs)
     self._shape = shape
@@ -78,7 +78,7 @@ class AxialPositionalEncoding(layer_base.Layer):
       for dim in self._dropout_broadcast_dims:
         noise_shape[dim] = 1
       keep_prob = 1.0 - self._dropout
-      if fastmath.backend_name() == 'jax':
+      if fastmath.is_backend(fastmath.Backend.JAX):
         keep_prob = jax.lax.tie_in(
             inputs, jnp.full((), keep_prob, dtype=inputs.dtype))
       keep = fastmath.random.bernoulli(rng, keep_prob, tuple(noise_shape))
@@ -101,7 +101,9 @@ class AxialPositionalEncoding(layer_base.Layer):
       ax_emb = self._kernel_initializer(ax_shape, ax_rng)
       weights.append(ax_emb)
 
-    self.state = 0 if self._mode == 'predict' else layer_base.EMPTY_STATE
+    # State is EMPTY_STATE by default, stays so except for predict mode.
+    if self._mode == 'predict':
+      self.state = np.array(0, dtype=np.int32)
     self.weights = tuple(weights)
 
 
@@ -111,7 +113,7 @@ class FixedBasePositionalEncoding(layer_base.Layer):
   def __init__(self, bases=[11, 13, 14, 15], n_digits=8,  #  pylint: disable=dangerous-default-value
                start_from_zero_one_in=100, base_dropout_one_in=100,
                mode='train', initializer=init.RandomUniformInitializer(1e-4)):
-    super(FixedBasePositionalEncoding, self).__init__()
+    super().__init__()
     self._bases = bases
     self._n_digits = n_digits
     self._mode = mode
@@ -151,7 +153,7 @@ class FixedBasePositionalEncoding(layer_base.Layer):
         embeddings *= base_dropout[:, None, None]
       res.append(embeddings)
     res = sum(res) + jnp.zeros_like(x)
-    return jnp.concatenate([x, res], axis=-1)
+    return x + res
 
   def init_weights_and_state(self, input_signature):
     d_feature = input_signature.shape[-1]

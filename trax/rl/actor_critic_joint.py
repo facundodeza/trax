@@ -18,6 +18,7 @@
 
 import functools
 
+from trax import data
 from trax import layers as tl
 from trax import supervised
 from trax.fastmath import numpy as jnp
@@ -67,7 +68,7 @@ class ActorCriticJointTrainer(rl_training.RLTrainer):
       n_replay_epochs: how many last epochs to take into the replay buffer;
            > 1 only makes sense for off-policy algorithms.
     """
-    super(ActorCriticJointTrainer, self).__init__(
+    super().__init__(
         task,
         n_trajectories_per_epoch=n_trajectories_per_epoch,
         output_dir=output_dir,
@@ -86,7 +87,7 @@ class ActorCriticJointTrainer(rl_training.RLTrainer):
     self._task.set_n_replay_epochs(n_replay_epochs)
 
     # Inputs to the joint model are produced by self.batches_stream.
-    self._inputs = supervised.Inputs(
+    self._inputs = data.inputs.Inputs(
         train_stream=lambda _: self.batches_stream())
 
     self._joint_model = functools.partial(
@@ -221,7 +222,7 @@ class PPOJointTrainer(ActorCriticJointTrainer):
     self._epsilon = epsilon
     self._value_loss_coeff = value_loss_coeff
     self._entropy_coeff = entropy_coeff
-    super(PPOJointTrainer, self).__init__(task, **kwargs)
+    super().__init__(task, **kwargs)
     self._trainer = supervised.Trainer(
         model=self._joint_model,
         optimizer=self._optimizer,
@@ -467,7 +468,7 @@ class A2CJointTrainer(ActorCriticJointTrainer):
     """Configures the A2C Trainer."""
     self._value_loss_coeff = value_loss_coeff
     self._entropy_coeff = entropy_coeff
-    super(A2CJointTrainer, self).__init__(task, **kwargs)
+    super().__init__(task, **kwargs)
     self._trainer = supervised.Trainer(
         model=self._joint_model,
         optimizer=self._optimizer,
@@ -627,7 +628,7 @@ class AWRJointTrainer(ActorCriticJointTrainer):
     self._beta = beta
     self._w_max = w_max
     self._value_loss_coeff = value_loss_coeff
-    super(AWRJointTrainer, self).__init__(task, **kwargs)
+    super().__init__(task, **kwargs)
 
   def batches_stream(self):
     """Use the RLTask self._task to create inputs to the value model."""

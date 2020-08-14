@@ -90,7 +90,7 @@ class Dense(base.Layer):
       return jnp.dot(x, w)  # Linear map.
 
   def init_weights_and_state(self, input_signature):
-    """Returns newly initialized weights for this layer.
+    """Randomly initializes this layer's weights.
 
     Weights are a `(w, b)` tuple for layers created with `use_bias=True` (the
     default case), or a `w` tensor for layers created with `use_bias=False`.
@@ -150,7 +150,7 @@ class Embedding(base.Layer):
     return jnp.take(self.weights, x, axis=0)
 
   def init_weights_and_state(self, input_signature):
-    """Returns tensor of newly initialized embedding vectors."""
+    """Randomly initializes this layer's weights."""
     del input_signature
     shape_w = (self._vocab_size, self._d_feature)
     # TODO(lukaszkaiser): do we split self.rng for consistency? Add a method?
@@ -182,7 +182,7 @@ class Dropout(base.Layer):
       mode: If `'train'`, this layer will perform dropout; else, it will pass
           all values through unaltered.
     """
-    super(Dropout, self).__init__()
+    super().__init__()
     self._initial_rate = rate
     self._shared_axes = [] if shared_axes is None else shared_axes
     self._mode = mode
@@ -210,15 +210,58 @@ class Dropout(base.Layer):
     mask_shape = list(x.shape)
     for axis in self._shared_axes:
       mask_shape[axis] = 1
-    if fastmath.backend_name() == 'jax':
+    if fastmath.is_backend(fastmath.Backend.JAX):
       keep_prob = jax.lax.tie_in(self.rng, 1.0 - rate)
     else:
       keep_prob = 1.0 - rate
     keep = fastmath.random.bernoulli(rng, keep_prob, tuple(mask_shape))
-    if fastmath.backend_name() == 'jax':
+    if fastmath.is_backend(fastmath.Backend.JAX):
       keep_prob = jax.lax.tie_in(keep, keep_prob)
     mask = keep.astype(x.dtype) / keep_prob
     return x * mask
+
+
+class Weights(base.Layer):
+  """Learnable weights as a layer.
+
+  It takes no input and returns a single tensor: weights.
+  """
+
+  def __init__(self, initializer, shape=tuple()):
+    """Returns a learnable tensor of shape `shape`.
+
+    Args:
+      initializer: Function taking shape and rng as arguments.
+      shape: Shape of the learnable weights.
+    """
+    super().__init__(name=f'Weights_{shape}', n_in=0, n_out=1)
+    self._shape = shape
+    self._initializer = initializer
+
+  def forward(self, x):
+    """Executes this layer as part of a forward pass through the model.
+
+    Args:
+      x: Tensor of same shape and dtype as the input signature used to
+          initialize this layer.
+
+    Returns:
+      Tensor with previously specified shape and dtype.
+    """
+    del x  # Unused. There is no input to this layer.
+    return self.weights
+
+  def init_weights_and_state(self, input_signature):
+    """Returns newly initialized weights for this layer.
+
+    Weights is a single  `w` tensor with previously specified shape.
+
+    Args:
+      input_signature: `ShapeDtype` instance characterizing the input this layer
+          should compute on. Unused.
+    """
+    del input_signature  # Unused. There is no input to this layer.
+    self.weights = self._initializer(self._shape, self.rng)
 
 
 def Flatten(n_axes_to_keep=1):
@@ -226,8 +269,8 @@ def Flatten(n_axes_to_keep=1):
 
   Flattening keeps all the values of the input tensor, but reshapes it by
   collapsing one or more trailing axes into a single axis. For example, a
-  `Flatten(n_axes_to_keep=2)` layer would map a tensor with shape `(2, 3, 5, 7,
-  11)` to the same values with shape `(2, 3, 385)`.
+  `Flatten(n_axes_to_keep=2)` layer would map a tensor with shape
+  `(2, 3, 5, 7, 11)` to the same values with shape `(2, 3, 385)`.
 
   Args:
     n_axes_to_keep: Number of leading axes to leave unchanged when reshaping;
@@ -378,12 +421,12 @@ def multigaussian_loss(preds, targets, ngauss=1):  # pylint: disable=invalid-nam
   return fastmath.logsumexp(loglogits + glogprobs, axis=-1)
 
 
-def gumbel_sample(log_probs, temperature=1.0):  # pylint: disable=invalid-name
-  """Returns a Gumbel sample from a categorical distribution, with temperature.
+def logsoftmax_sample(log_probs, temperature=1.0):  # pylint: disable=invalid-name
+  """Returns a sample from a log-softmax output, with temperature.
 
   Args:
-    log_probs: <tbd>
-    temperature: <tbd>
+    log_probs: Logarithms of probabilities (often coming from LogSofmax)
+    temperature: For scaling before sampling (1.0 = default, 0.0 = pick argmax)
   """
   # This is equivalent to sampling from a softmax with temperature.
   u = np.random.uniform(low=1e-6, high=1.0 - 1e-6, size=log_probs.shape)

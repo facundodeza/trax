@@ -16,6 +16,7 @@
 """Tests for trax.fastmath.ops."""
 
 import collections
+from absl.testing import parameterized
 
 import gin
 import jax.numpy as jnp
@@ -27,10 +28,10 @@ from trax import fastmath
 _TestNamedtuple = collections.namedtuple('_TestNamedtuple', ['x'])
 
 
-class BackendTest(test.TestCase):
+class BackendTest(test.TestCase, parameterized.TestCase):
 
   def setUp(self):
-    super(BackendTest, self).setUp()
+    super().setUp()
     gin.clear_config()
 
   def override_gin(self, bindings):
@@ -46,6 +47,13 @@ class BackendTest(test.TestCase):
     backend = fastmath.backend()
     self.assertNotEqual(jnp, backend['np'])
     self.assertEqual(onp, backend['np'])
+
+  def test_backend_can_be_set(self):
+    self.assertEqual(fastmath.backend_name(), 'jax')
+    fastmath.set_backend('tensorflow-numpy')
+    self.assertEqual(fastmath.backend_name(), 'tensorflow-numpy')
+    fastmath.set_backend(None)
+    self.assertEqual(fastmath.backend_name(), 'jax')
 
   def test_numpy_backend_delegation(self):
     # Assert that we are getting JAX's numpy backend.
@@ -73,6 +81,13 @@ class BackendTest(test.TestCase):
     self.assertEqual(onp.isinf, numpy.isinf)
     self.assertEqual(onp.inf, numpy.inf)
 
+  @parameterized.named_parameters(
+      ('_' + b.value, b) for b in (fastmath.Backend.JAX, fastmath.Backend.TFNP))
+  def test_fori_loop(self, backend):
+    with fastmath.use_backend(backend):
+      res = fastmath.fori_loop(2, 5, lambda i, x: x + i, 1)
+      self.assertEqual(res, 1 + 2 + 3 + 4)
+
   def test_nested_map(self):
     inp = {'a': ([0, 1], 2), 'b': _TestNamedtuple(3)}
     out = {'a': ([1, 2], 3), 'b': _TestNamedtuple(4)}
@@ -85,6 +100,23 @@ class BackendTest(test.TestCase):
     ]
     out = {'a': ([[0, 1], [1, 2]], [2, 3]), 'b': _TestNamedtuple([3, 4])}
     onp.testing.assert_equal(fastmath.nested_stack(inp), out)
+
+  def test_names_match(self):
+    # Names match up.
+    for backend_enum, backend_obj in fastmath.ops._backend_dict.items():
+      self.assertEqual(backend_enum.value, backend_obj['name'])
+
+    # Every backend appears in the dictionary.
+    for backend_enum in fastmath.ops.Backend:
+      self.assertIn(backend_enum, fastmath.ops._backend_dict)
+
+  def test_use_backend_str(self):
+    with fastmath.use_backend('tensorflow-numpy'):
+      self.assertEqual(fastmath.backend_name(), 'tensorflow-numpy')
+
+  def test_use_backend_enum(self):
+    with fastmath.use_backend(fastmath.Backend.NUMPY):
+      self.assertEqual(fastmath.backend_name(), 'numpy')
 
 
 if __name__ == '__main__':

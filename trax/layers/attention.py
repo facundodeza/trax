@@ -53,7 +53,7 @@ def Attention(d_feature, n_heads=1, dropout=0.0, mode='train'):
     mode: Either 'train' or 'eval'.
   """
   return cb.Serial(
-      cb.Dup(), cb.Dup(),  # TODO(jonni): replace with Select([0, 0, 0])
+      cb.Select([0, 0, 0]),
       AttentionQKV(d_feature, n_heads=n_heads, dropout=dropout, mode=mode),
   )
 
@@ -97,7 +97,7 @@ class PureAttention(base.Layer):
   """
 
   def __init__(self, n_heads=1, dropout=0.0, mode='train'):
-    super(PureAttention, self).__init__(n_in=4, n_out=2)
+    super().__init__(n_in=4, n_out=2)
     self._n_heads = n_heads
     self._dropout = dropout
     self._mode = mode
@@ -137,13 +137,16 @@ class PureAttention(base.Layer):
       x = x.reshape((batch_size, -1, n_heads * d_head))
       return x
 
-    per_head_results = DotProductAttention(_split_into_heads(q),
-                                           _split_into_heads(k),
-                                           _split_into_heads(v),
-                                           mask,
-                                           dropout=self._dropout,
-                                           mode=self._mode,
-                                           rng=self.rng)
+    per_head_results, dots = DotProductAttention(
+        _split_into_heads(q),
+        _split_into_heads(k),
+        _split_into_heads(v),
+        mask,
+        dropout=self._dropout,
+        mode=self._mode,
+        rng=self.rng)
+    if self._mode == 'viz':
+      self.state = dots
     merged_results = _merge_heads(per_head_results)
     return (merged_results, mask)
 
@@ -178,7 +181,7 @@ def DotProductAttention(queries, keys, values, mask, dropout, mode, rng):
     # We must ensure that both mask and the -1e9 constant have a data dependency
     # on the input. Broadcasted copies of these use a lot of memory, so they
     # should be computed at runtime (rather than being global constants).
-    if fastmath.backend_name() == 'jax':
+    if fastmath.is_backend(fastmath.Backend.JAX):
       mask = jax.lax.tie_in(dots, mask)
     # JAX's `full_like` already ties in -1e9 to dots.
     dots = jnp.where(mask, dots, jnp.full_like(dots, -1e9))
@@ -190,7 +193,7 @@ def DotProductAttention(queries, keys, values, mask, dropout, mode, rng):
     keep = fastmath.random.bernoulli(rng, 1.0 - dropout, dots.shape)
     dots = jnp.where(keep, dots / (1.0 - dropout), jnp.zeros_like(dots))
   out = jnp.matmul(dots, values)
-  return out
+  return out, dots
 
 
 def CausalAttention(d_feature, n_heads=1, dropout=0.0, mode='train'):
@@ -254,7 +257,7 @@ class DotProductCausalAttention(base.Layer):
   """Computes new activations via causally masked attention-weighted values."""
 
   def __init__(self, dropout=0.0, mode='train'):
-    super(DotProductCausalAttention, self).__init__(n_in=3, n_out=1)
+    super().__init__(n_in=3, n_out=1)
     self._dropout = dropout
     self._mode = mode
 
@@ -269,15 +272,17 @@ class DotProductCausalAttention(base.Layer):
       # Not all backends define jnp.tril. However, using np.tril is inefficient
       # in that it creates a large global constant. TODO(kitaev): try to find an
       # alternative that works across all backends.
-      if fastmath.backend_name() == 'jax':
+      if fastmath.is_backend(fastmath.Backend.JAX):
         mask = jnp.tril(
             jnp.ones((1, mask_size, mask_size), dtype=np.bool_), k=0)
       else:
         mask = np.tril(
             np.ones((1, mask_size, mask_size), dtype=np.bool_), k=0)
 
-    res = DotProductAttention(
+    res, dots = DotProductAttention(
         q, k, v, mask, dropout=self._dropout, mode=self._mode, rng=self.rng)
+    if self._mode == 'viz':
+      self.state = dots
     return res
 
   def init_weights_and_state(self, input_signature):
@@ -335,7 +340,7 @@ class PositionalEncoding(base.Layer):
 
   def __init__(self, max_len=2048, dropout=0.0, dropout_broadcast_dims=(-2,),
                mode='train'):
-    super(PositionalEncoding, self).__init__()
+    super().__init__()
     self._max_len = max_len
     if dropout >= 1.0:
       raise ValueError('Dropout rates must be lower than 1.')
@@ -358,7 +363,7 @@ class PositionalEncoding(base.Layer):
         for dim in self._dropout_broadcast_dims:
           noise_shape[dim] = 1
         keep_prob = 1.0 - self._dropout
-        if fastmath.backend_name() == 'jax':
+        if fastmath.is_backend(fastmath.Backend.JAX):
           keep_prob = jax.lax.tie_in(x, jnp.full((), keep_prob, dtype=x.dtype))
         keep = fastmath.random.bernoulli(self.rng, keep_prob,
                                          tuple(noise_shape))
@@ -412,28 +417,44 @@ def _fast_inference_init_state(input_signature, buffer_length):
   k = zeros_for(batch_size, input_signature[1])
   v = zeros_for(batch_size, input_signature[2])
   mask = jnp.zeros((batch_size, 1, buffer_length))
-  seq_indices = jnp.zeros((batch_size,), dtype=jnp.int32)
-  return (k, v, mask, seq_indices)
+  return (k, v, mask, jnp.array(0))
 
 
 def _fast_inference_update_state(inputs, state):
-  """Updates state of a causal attention layer for fast inference."""
-  if fastmath.backend_name() != 'jax':
+  """Updates state of a causal attention layer for fast inference.
+
+  The layer state stores tensors with cached values of keys and values,
+  as well as the mask and an index. To make shapes static, keys and values
+  in the state are long, and the index indicates where the new keys and values
+  from inputs need to be appended. Mask ensures that attention will only look
+  at keys upto index.
+
+  During update, we append new_keys and new_values to keys and values at
+  position given by index. We also update mask (which starts as all-0s) to
+  be 1 at the new keys positions. And we increment index by length of new keys.
+
+  Args:
+    inputs: a triple (new_queries, new_keys, new_values)
+    state: layer state with (keys, values, mask, index)
+
+  Returns:
+    Updated state.
+  """
+  if not fastmath.is_backend(fastmath.Backend.JAX):
     raise ValueError(f'JAX backend is required in predict mode, but found '
-                     f'backend ({fastmath.backend_nameO()}).')
-  for x in inputs:
-    if x.shape[1] != 1:
-      raise ValueError(f'In predict mode, input sequence must have length 1, '
-                       f'instead has length {x.shape[1]}.')
-  # Fast inference: run with only 1 query in each step, storing the sequence
+                     f"backend ({fastmath.backend()['name']}).")
+
+  # Fast inference: run step-by-step, storing the sequence
   # of keys and values calculated so far in state.
   (_, new_k, new_v) = inputs
-  (ks, vs, mask, seq_indices) = state
-  batch_indices = jnp.arange(ks.shape[0])
-  ks = jax.ops.index_update(
-      ks, jax.ops.index[batch_indices, seq_indices, :], new_k[:, 0, :])
-  vs = jax.ops.index_update(
-      vs, jax.ops.index[batch_indices, seq_indices, :], new_v[:, 0, :])
-  mask = jax.ops.index_update(
-      mask, jax.ops.index[batch_indices, :, seq_indices], 1)
-  return (ks, vs, mask, seq_indices + 1)
+  length = new_k.shape[1]
+  (ks, vs, mask, idx) = state
+  # TODO(lukaszkaiser): benchmark speed and decide if using a separate code path
+  # with index_update when length == 1 is worth it.
+  # Keys and values are of shape [batch_size, length, d_kv].
+  ks = jax.lax.dynamic_update_slice_in_dim(ks, new_k, idx, axis=1)
+  vs = jax.lax.dynamic_update_slice_in_dim(vs, new_v, idx, axis=1)
+  # Mask is of shape [batch_size, 1 (for heads), length].
+  new_mask = jnp.ones((mask.shape[0], mask.shape[1], length))
+  mask = jax.lax.dynamic_update_slice_in_dim(mask, new_mask, idx, axis=2)
+  return (ks, vs, mask, idx + length)

@@ -21,11 +21,8 @@ will replace `trainer_lib`.
 
 import collections
 import functools
-import gzip as gzip_lib
 import itertools
 import os
-import pickle
-import random
 import sys
 import time
 
@@ -34,18 +31,18 @@ from absl import logging
 import gin
 
 import jax
-import numpy
 import tensorflow.compat.v2 as tf
 from trax import fastmath
 from trax import jaxboard
 from trax import layers as tl
 from trax import optimizers as trax_opt
+from trax.data import inputs as trax_inputs
 from trax.fastmath import numpy as np
 from trax.fastmath import random as jax_random
 from trax.shapes import ShapeDtype
 from trax.supervised import history as trax_history
-from trax.supervised import inputs as trax_inputs
 from trax.supervised import lr_schedules as lr
+from trax.supervised import training
 
 
 # TODO(afrozm): Maybe flatten everything from OptState into TrainerState.
@@ -86,8 +83,8 @@ class Trainer(object):
                should_write_summaries=True,
                metrics=None, checkpoint_highest=None, checkpoint_lowest=None):
 
-    self._is_chief, self._n_devices, rng = (
-        self._init_host_and_devices(n_devices, random_seed))
+    self._is_chief, _, self._n_devices, rng = (
+        training.init_host_and_devices(n_devices, random_seed))
     self._should_save_checkpoints = should_save_checkpoints and self._is_chief
     self._checkpoints_at = checkpoints_at or []
     self._should_write_summaries = should_write_summaries
@@ -121,7 +118,7 @@ class Trainer(object):
       (slots, opt_params) = opt.tree_init(weights)
       return (OptState(weights, slots, opt_params), state)
 
-    if fastmath.backend_name() == 'jax':
+    if fastmath.is_backend(fastmath.Backend.JAX):
       # JIT parameter initialization to avoid memory fragmentation
       new_opt_state_and_model_state = (
           fastmath.jit(new_opt_state_and_model_state))
@@ -215,7 +212,7 @@ class Trainer(object):
 
   @property
   def learning_rate(self):
-    with fastmath.use_backend('numpy'):
+    with fastmath.use_backend(fastmath.Backend.NUMPY):
       return self._lr_schedule(self._step)
 
   def reset(self, output_dir, init_checkpoint=None):
@@ -327,7 +324,10 @@ class Trainer(object):
     self._opt_state = opt_state._replace(weights=weights, slots=slots)
     if self._should_log_now():
       for name, value in stat.items():
-        scalar_value = np.mean(value)  # On  multiple devices, take the mean.
+        # TODO(afrozm): value is a scalar, but sometimes JAX is crashing here
+        # with a device put array error complaning that it should be an array.
+        # On  multiple devices, take the mean.
+        scalar_value = np.mean(np.array(value))
         self._train_sw.scalar('training/' + name, scalar_value, step=self._step)
     self._step += 1
 
@@ -337,7 +337,7 @@ class Trainer(object):
     # TODO(lukaszkaiser): both model state and parameters by default include
     # the loss layer. Currently, we access the pure-model parameters by just
     # indexing, [0] here. But we should make it more explicit in a better API.
-    weights = (self._opt_state[0][0], self._metrics_weights)
+    weights = (self._opt_state.weights[0], self._metrics_weights)
     state = (self._model_state[0], self._metrics_state)
     self.log_step('Evaluation')
     train_eval_slice = itertools.islice(self._train_eval_stream, n_eval_steps)
@@ -396,7 +396,7 @@ class Trainer(object):
               jaxboard.markdownify_operative_config_str(config_str))
 
   def _save_state_dict(self, trainer_state_dict, weights_file):
-    pickle_to_file(trainer_state_dict, weights_file, gzip=True)
+    training.pickle_to_file(trainer_state_dict, weights_file, gzip=True)
     log('Model saved to %s' % weights_file, stdout=False)
 
   def save_state(self, keep, prefix='model'):
@@ -407,7 +407,7 @@ class Trainer(object):
       opt_state = OptState(*fastmath.nested_map(first_replica, opt_state))
     # This line, while optional, allows JAX to transfer arrays from the device
     # to the host in parallel, which is particularly important for cloud TPU.
-    if fastmath.backend_name() == 'jax':
+    if fastmath.is_backend(fastmath.Backend.JAX):
       opt_state = jax.device_get(opt_state)
     step, history, model_state = self._step, self._history, self._model_state
     output_dir = self._output_dir
@@ -432,7 +432,7 @@ class Trainer(object):
     output_dir = self._output_dir
     if self.n_devices > 1:
       batch = _reshape_by_device(batch, self.n_devices)
-    weights = self._opt_state[0][0]
+    weights = self._opt_state.weights[0]
     forward_computation = jax.xla_computation(self._model_predict_eval)(
         batch, weights=weights, state=self._model_state[0],
         rng=self._rngs[0])
@@ -467,42 +467,6 @@ class Trainer(object):
       sizes = _sizes(single_weights)
     total_size = _nested_reduce(sum, sizes)
     self.log_step('Total number of trainable weights: %d' % total_size)
-
-  def _init_host_and_devices(self, n_devices=None, random_seed=None):
-    """Initializes host and device attributes for this trainer.
-
-    Args:
-      n_devices: Number of devices this trainer will use. If `None`, get the
-          number from the backend.
-      random_seed: Random seed as the starting point for all random numbers used
-          by the trainer. If `None`, calculate one from system time and host id.
-
-    Returns:
-      is_chief: True if this trainer has special chief responsibilities.
-      n_devices: The passed in value of n_devices or a computed default.
-      random_seed: The passed in value of random_seed or a computed default.
-    """
-    if fastmath.backend_name() == 'jax':
-      host_id = jax.host_id()
-      host_count = jax.host_count()
-    else:
-      host_id = 0
-      host_count = 1
-    is_chief = (host_id == 0)
-
-    logging.info('Initializing hosts and devices: host_id %d, host_count %d, '
-                 'is_chief %d', host_id, host_count, is_chief)
-
-    device_count = fastmath.device_count()
-    n_devices = n_devices or device_count
-    # TODO(lukaszkaiser): remove this restriction when possible.
-    if n_devices != device_count and fastmath.backend_name() == 'jax':
-      raise ValueError('JAX cannot work yet with n_devices != all devices: '
-                       '%d != %d' % (n_devices, device_count))
-
-    if random_seed is None and host_count > 1:
-      random_seed = int(1e6 * (host_id + time.time())) % 2**32
-    return is_chief, n_devices, init_random_number_generators(random_seed)
 
   def _should_save_now(self):
     return self._should_save_checkpoints and self._step in self._checkpoints_at
@@ -554,7 +518,7 @@ def train(output_dir,
           metrics=None,
           checkpoint_highest=None,
           checkpoint_lowest=None,
-          custom_train_fn=None):
+          use_loop=True):
   """Train the model on the inputs.
 
   Args:
@@ -579,13 +543,48 @@ def train(output_dir,
     metrics: optionally override the default metrics dictionary.
     checkpoint_highest: save the checkpoint highest at this metric.
     checkpoint_lowest: save the checkpoint lowest at this metric.
-    custom_train_fn: custom train function to call, entirely bypassing this one
+    use_loop: whether to use training.Loop instead of Trainer.
 
   Returns:
-    trax.TrainerState
+    trax.TrainerState or training.Loop if use_loop is True
   """
-  if custom_train_fn is not None:
-    return custom_train_fn(output_dir, model=model)
+  if use_loop:
+    n_devices = num_devices() or fastmath.device_count()
+
+    # Prepare the training task.
+    # Inputs is either an Inputs instance or a function that returns it.
+    if callable(inputs):  # If we pass a function, e.g., through gin, call it.
+      inputs = inputs()
+    train_task = training.TrainTask(inputs.train_stream(n_devices),
+                                    loss_layer=loss_fn,
+                                    optimizer=optimizer(),
+                                    lr_schedule=lr_schedule_fn(),
+                                    n_steps_per_checkpoint=eval_frequency)
+
+    # Prepare the evaluation.
+    metrics_dict = metrics if metrics is not None else _DEFAULT_METRICS
+    names, metrics = zip(*metrics_dict.items())
+    eval_task = training.EvalTask(inputs.eval_stream(n_devices),
+                                  metrics,
+                                  metric_names=names,
+                                  n_eval_batches=eval_steps)
+
+    # Prepare the training loop.
+    checkpoint_at = None
+    if checkpoints_at is not None:
+      checkpoint_at = lambda step: step in checkpoints_at
+    loop = training.Loop(model(mode='train'),
+                         [train_task],
+                         eval_model=model(mode='eval'),
+                         eval_tasks=[eval_task],
+                         output_dir=output_dir,
+                         checkpoint_at=checkpoint_at,
+                         n_devices=n_devices,
+                         random_seed=random_seed)
+
+    # Train and return the loop.
+    loop.run(steps)
+    return loop
 
   n_devices = num_devices()
   trainer = trainer_class(model, loss_fn, optimizer, lr_schedule_fn(), inputs,
@@ -612,7 +611,7 @@ def train(output_dir,
       # Bookkeeping we do at the first step
       if trainer.step == 1:
         # Save computation graph (single-device only for now)
-        if (save_graphs and fastmath.backend_name() == 'jax'):
+        if (save_graphs and fastmath.is_backend(fastmath.Backend.JAX)):
           trainer.save_computation_graphs()
 
         # Save Gin config
@@ -668,10 +667,13 @@ def _jit_update_fn(predict_fn, loss_fn, optimizer, n_devices, jit=True):
     # the number of devices on this host machine, however psum goes over all
     # devices of all hosts (ex: a TPU pod) and we need to be averaging over all
     # of them.
-    grads = jax.tree_util.tree_map(
-        lambda g: (  # pylint: disable=g-long-lambda
-            fastmath.psum(g, 'batch') / fastmath.psum(np.array(1.0), 'batch')),
-        grads)
+    #
+    # Collect all gradients.
+    grads = fastmath.psum(grads, 'batch')
+    n_devices_total = fastmath.psum(np.array(1.0), 'batch')
+    # Average across hosts.
+    grads = jax.tree_util.tree_map(lambda g: g / n_devices_total, grads)
+
     new_weights, new_slots, stats = optimizer.tree_update(
         i, grads, weights, slots, opt_params)
     return (new_weights, new_slots), stats, state, subrng
@@ -819,22 +821,11 @@ def load_trainer_state(output_dir, model, weights_file=None):
   elif not tf.io.gfile.exists(weights_file):
     raise ValueError('File not found: %s' % weights_file)
 
-  trainer_state_dict = unpickle_from_file(weights_file, gzip=True)
+  trainer_state_dict = training.unpickle_from_file(weights_file, gzip=True)
   trainer_state = trainer_state_from_dict(trainer_state_dict, model)
   log('Model loaded from %s at step %d' % (weights_file, trainer_state.step))
   logging.debug('From loaded model : history = %s', trainer_state.history)
   return trainer_state
-
-
-def init_random_number_generators(seed=None):
-  """Initializes random generators for Python, NumPy, TensorFlow, and JAX."""
-  # Seed Python random (None as seed is okay), then use it to seed the others.
-  random.seed(seed)
-  if seed is None:
-    seed = random.randint(0, 2**31 - 1)
-  numpy.random.seed(seed)
-  tf.random.set_seed(seed)
-  return jax_random.get_prng(seed)
 
 
 def _reshape_by_device(x, n_devices):
@@ -868,76 +859,3 @@ def _repeat_stream(stream, n_devices):
   while True:
     for example in stream(n_devices):
       yield example
-
-
-def pickle_to_file(obj, file_path, gzip=False):
-  """Pickle obj to file_path with gzipping and failure protection."""
-  # Pickle to tmp file and overwrite to prevent writing partial files.
-  tmp_file_path = file_path + '._tmp_'
-  with tf.io.gfile.GFile(tmp_file_path, 'wb') as f:
-    if not gzip:
-      pickle.dump(obj, f)
-    else:
-      with gzip_lib.GzipFile(fileobj=f, compresslevel=2) as gzipf:
-        pickle.dump(obj, gzipf)
-  # Moving a file is much less error-prone than pickling large files.
-  tf.io.gfile.rename(tmp_file_path, file_path, overwrite=True)
-
-
-def unpickle_from_file(file_path, gzip=False):
-  """Unpickle obj from file_path with gzipping."""
-  with tf.io.gfile.GFile(file_path, 'rb') as f:
-    if not gzip:
-      obj = pickle.load(f)
-    else:
-      with gzip_lib.GzipFile(fileobj=f, compresslevel=2) as gzipf:
-        obj = pickle.load(gzipf)
-  return obj
-
-
-def autoregressive_sample(model, prefix=None, inputs=None,
-                          batch_size=1, temperature=1.0,
-                          start_id=0, eos_id=1, max_length=100,
-                          accelerate=True):
-  """Perform aturegressive sampling from the provided model.
-
-  Args:
-    model: instance of trax.Layer, the model to sample from (at mode='predict')
-    prefix: optional tensor [batch_size, L]: prefix for decoding
-    inputs: optional tensor [batch_size, M]: inputs to provide to the model
-    batch_size: how many batches to sample (default: 1)
-    temperature: sampling temperature (default: 1.0)
-    start_id: int, id for the start symbol fed at the beginning (default: 1)
-    eos_id: int, id of the end-of-sequence symbol used to stop (default: 1)
-    max_length: maximum length to sample (default: 100)
-    accelerate: whether to accelerate the model before decoding (default: True)
-
-  Returns:
-    a tensor of ints of shape [batch_size, N] with N <= max_length containing
-    the autoregressively sampled output from the model
-  """
-  if prefix is not None and prefix.shape[0] != batch_size:
-    raise ValueError(f'Prefix batch size {prefix.shape[0]} != {batch_size}.')
-  if inputs is not None and inputs.shape[0] != batch_size:
-    raise ValueError(f'Inputs batch size {inputs.shape[0]} != {batch_size}.')
-  fast_model = tl.Accelerate(model) if accelerate else model
-  cur_symbol = np.full((batch_size, 1), start_id, dtype=np.int32)
-  result = []
-  for i in range(max_length):
-    model_input = cur_symbol if inputs is None else (inputs, cur_symbol)
-    logits = fast_model(model_input)
-    if inputs is not None:
-      logits = logits[0]  # Pick first element from model output (a pair here)
-    if prefix is not None and i < prefix.shape[1]:  # Read from prefix.
-      cur_prefix_symbol = prefix[:, i]
-      sample = cur_prefix_symbol[:, None]
-    else:
-      sample = tl.gumbel_sample(logits, temperature=temperature)
-    result.append(sample)
-    # Note: we're using 'predict' mode autoregressive models here, so history
-    # is caches in the model state and we are only feeding one symbol next.
-    cur_symbol = sample
-    # TODO(lukaszkaiser): extend stopping below to batch_sizes > 1.
-    if batch_size == 1 and int(sample[0, 0]) == eos_id:
-      break
-  return np.concatenate(result, axis=1)

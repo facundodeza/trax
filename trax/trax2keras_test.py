@@ -23,6 +23,7 @@ import numpy as onp
 
 import tensorflow.compat.v2 as tf
 
+import trax
 from trax import fastmath as math_lib
 from trax import layers
 from trax import trax2keras
@@ -35,6 +36,10 @@ from trax.trax2keras import to_tensors
 
 
 tf.enable_v2_behavior()
+
+
+def has_gpu():
+  return bool(tf.config.list_physical_devices("GPU"))
 
 
 def dummy_inputs(rng, input_sig):
@@ -97,22 +102,22 @@ class Trax2KerasTest(tf.test.TestCase, parameterized.TestCase):
       ])
   def testTrain(self, layer_id, rng_updater_id, batch_size, trax_has_weights,
                 explicit_build, use_model):
-    """Tests training (forward and backward pass) for TraxKerasLayer.
+    """Tests training (forward and backward pass) for AsKeras.
 
     Args:
       layer_id: an integer, the index into `_LAYERS`.
       rng_updater_id: an integer, the index into `_RNG_UPDATERS`.
       batch_size: an integer or `None`, the value for the `batch_size` argument
-        in `TraxKerasLayer.__init__`.
+        in `AsKeras.__init__`.
       trax_has_weights: bool, whether to make the trax layer contain weights at
-        the time when `TraxKerasLayer.build` is called.
-      explicit_build: bool, whether to explicitly call `TraxKerasLayer.build`.
+        the time when `AsKeras.build` is called.
+      explicit_build: bool, whether to explicitly call `AsKeras.build`.
       use_model: bool, whether to build a `tf.keras.Model` out of the
-        `TraxKerasLayer` layer and use the model to do the training instead of
+        `AsKeras` layer and use the model to do the training instead of
         the bare layer. If `True`, we will also test checkpointing and restoring
         using the model.
     """
-    with math_lib.use_backend("tf"):
+    with trax.fastmath.use_backend("tensorflow-numpy"):
       make_trax_layer, input_shapes_no_batch, dtype, allow_none_batch = (
           _LAYERS[layer_id])
       # We make a fresh trax layer for each test case, so that different test
@@ -132,7 +137,7 @@ class Trax2KerasTest(tf.test.TestCase, parameterized.TestCase):
       if trax_has_weights:
         trax_layer(to_arrays(get_inputs()), weights=weights, state=state)
       rng = math_lib.random.get_prng(1234)
-      keras_layer = trax2keras.TraxKerasLayer(
+      keras_layer = trax2keras.AsKeras(
           trax_layer, batch_size=batch_size, initializer_rng=initializer_rng,
           rng=rng, rng_updater=rng_updater)
       if explicit_build:
@@ -171,7 +176,7 @@ class Trax2KerasTest(tf.test.TestCase, parameterized.TestCase):
             keras_layer.trainable_variables, keras_grads)
         self.assertAllClose(
             to_tensors(weights), read_values(keras_layer._weights),
-            rtol=2e-6, atol=5e-5)
+            rtol=2e-6, atol=2e-4 if has_gpu() else 1e-6)
         self.assertAllClose(to_tensors(state), read_values(keras_layer._state))
         self.assertAllClose(to_tensors(rng), read_values(keras_layer._rng))
       if use_model:

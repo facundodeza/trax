@@ -30,7 +30,7 @@ class SkippingSerial(tl.Serial):
   """Serial combinator that also skips layers."""
 
   def __init__(self, *sublayers, **kwargs):
-    super(SkippingSerial, self).__init__(*sublayers)
+    super().__init__(*sublayers)
     self._mode = kwargs.get('mode', 'train')
     # Parameters for skipping: how many steps to warm-up, how often to skip.
     self._skipping_warmup_steps = kwargs.get('skipping_warmup_steps', 20000)
@@ -42,12 +42,32 @@ class SkippingSerial(tl.Serial):
         assert layer.n_in == n_in_out
         assert layer.n_out == n_in_out
 
+  # pylint: disable=protected-access
   def init_weights_and_state(self, input_signature):
-    """Add a step-counter to the state. Initialize with 0."""
-    super(SkippingSerial, self).init_weights_and_state(input_signature)
-    self._state = (0, self._state)
+    weights = []
+    states = []
+    # In the code below, stack, inputs, and outputs are abstract (shapes and
+    # dtypes), but weights and states are non-abstract actual values.
+    stack = input_signature
+    for sublayer in self.sublayers:
+      inputs = _inputs_from_stack(sublayer, stack)
+      weights_or_cache_marker, state_or_cache_marker = (
+          sublayer.init(inputs, use_cache=True))
+      outputs, _ = sublayer._forward_abstract(inputs)
+      stack = _outputs_onto_stack(sublayer, outputs, stack)
 
-  @tl.Layer.state.setter
+      weights.append(weights_or_cache_marker)
+      states.append(state_or_cache_marker)
+    self.state = (jnp.array(0, dtype=jnp.int32), states)
+    self.weights = weights
+  # pylint: enable=protected-access
+
+  @property
+  def state(self):
+    """Returns a tuple containing this layer's state; may be empty."""
+    return self._state
+
+  @state.setter
   def state(self, state):
     """Recursively sets non-param state on this layer and all sublayers."""
     self._state = state
@@ -57,8 +77,7 @@ class SkippingSerial(tl.Serial):
           f'Number of state elements ({len(state[1])}) does not equal '
           f'number of sublayers ({n_layers}).')
     for layer, sublayer_state in zip(self.sublayers, state[1]):
-      if sublayer_state is not tl.GET_STATE_FROM_CACHE:
-        layer.state = sublayer_state
+      layer.state = sublayer_state
 
   def forward(self, xs):
     self._validate_forward_inputs(xs)
@@ -89,7 +108,7 @@ class SkippingSerial(tl.Serial):
     if self._mode == 'train':
       # warmup goes from 1.0 at start to 0.0 at skipping_warmup_steps and after
       w_steps = float(self._skipping_warmup_steps)
-      f_step = jnp.array(step, dtype=jnp.float32)
+      f_step = step.astype(jnp.float32)
       warmup = jnp.maximum(0.0, (w_steps - f_step) / w_steps)
       # low is the minimum number of layers to *not* skip, from n_layers to 0
       low = warmup * float(n_layers)
@@ -108,12 +127,13 @@ class SkippingSerial(tl.Serial):
     for layer, p, s, rng in zip(self.sublayers, weights, layers_state, rngs):
       inputs = _inputs_from_stack(layer, stack)
       def CondF(t):
-        o, s = layer.pure_fn(t[0], t[1], t[2], t[3])  # pylint: disable=cell-var-from-loop
-        return o, t[1], s, t[3]
-      outputs, _, s, _ = fastmath.cond(
+        return layer.pure_fn(t[0], t[1], t[2], t[3])  # pylint: disable=cell-var-from-loop
+      def PassF(t):
+        return t[0], t[2]
+      outputs, s = fastmath.cond(
           fastmath.lt(cur_layer_idx, n_forward_layers),
           CondF,
-          lambda x: x,
+          PassF,
           (inputs, p, s, rng)
       )
       stack = _outputs_onto_stack(layer, outputs, stack)

@@ -107,12 +107,32 @@ def _tf_pmap(*args, **kwargs):
   return tf_np_extensions.pmap(*args, **kwargs)
 
 
+def _tf_grad(f, **kwargs):
+  """Grad with support for argnums."""
+  argnums = kwargs.pop('argnums', 0)
+  if argnums != 0:
+    def g(*args, **kwargs):
+      args = list(args)
+      args[0], args[argnums] = args[argnums], args[0]
+      return f(*args, **kwargs)
+  else:
+    g = f
+  grad_g = tf_np_extensions.grad(g, **kwargs)
+  if argnums == 0:
+    return grad_g
+  def grad_f(*args, **kwargs):
+    args = list(args)
+    args[0], args[argnums] = args[argnums], args[0]
+    return grad_g(*args, **kwargs)
+  return grad_f
+
+
 TF_BACKEND = {
-    'name': 'tf',
+    'name': 'tensorflow-numpy',
     'np': tf_np,
     'jit': _tf_jit,
     'stop_gradient': tf_np_extensions.stop_gradient,
-    'grad': tf_np_extensions.grad,
+    'grad': _tf_grad,
     'vjp': tf_np_extensions.vjp,
     'custom_grad': tf_np_extensions.custom_grad,
     'abstract_eval': tf_abstract_eval,
@@ -130,7 +150,11 @@ TF_BACKEND = {
     'random_bernoulli': tf_np_extensions.bernoulli,
     'random_get_prng': tf_np_extensions.prng,
     'random_split': tf_np_extensions.split,
-    'dataset_as_numpy': tf_np_extensions.dataset_as_numpy,
+    # TODO(wangpeng): See whether and how to support `remat`
+    'remat': lambda f: f,
+    'scan': tf_np_extensions.scan,
+    # TODO(wangpeng): can we make extensions ds_as_numpy compatible with data?
+    # 'dataset_as_numpy': tf_np_extensions.dataset_as_numpy,
     'device_count': lambda: max(len(tf_np_extensions.accelerators()), 1),
     'pmap': _tf_pmap,
     'psum': tf_np_extensions.psum,

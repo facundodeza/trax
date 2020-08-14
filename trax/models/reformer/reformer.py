@@ -87,7 +87,7 @@ class ReversibleHalfResidualV2(tl.ReversibleLayer):
   """
 
   def __init__(self, *residual_layers, attention_layer=None):
-    super(ReversibleHalfResidualV2, self).__init__()
+    super().__init__()
 
     self.compute_residual = tl.Serial(*residual_layers)
     self.attention_layer = attention_layer
@@ -120,7 +120,7 @@ class ReversibleHalfResidualV2(tl.ReversibleLayer):
 
     output = accumulator + residual
     stack = (output,) + context
-    self.state = new_state
+    self.state = tuple(new_state)
     return stack
 
   def reverse(self, output, weights=(), state=(), new_state=(), rng=None):
@@ -303,13 +303,11 @@ def ReformerLM(vocab_size,
   Returns:
     the layer.
   """
-  d_emb = d_model
   if not axial_pos_shape:
     positional_encoding = tl.PositionalEncoding(
         max_len=max_len, dropout=dropout, mode=mode)
   elif axial_pos_shape == 'fixed-base':  # TODO(lukaszkaiser): remove this HACK
     positional_encoding = tl.FixedBasePositionalEncoding(mode=mode)
-    d_emb //= 2
   elif axial_pos_shape == 'infinite':  # TODO(lukaszkaiser): remove this HACK
     positional_encoding = tl.InfinitePositionalEncoding(affine=False)
   elif axial_pos_shape == 'infinite-affine':
@@ -325,7 +323,7 @@ def ReformerLM(vocab_size,
         dropout=dropout, mode=mode)
 
   positional_embedder = [
-      tl.Embedding(vocab_size, d_emb),
+      tl.Embedding(vocab_size, d_model),
       tl.Dropout(rate=dropout, shared_axes=[-2], mode=mode),  # pylint: disable=no-value-for-parameter
       positional_encoding,
   ]
@@ -629,7 +627,7 @@ def Reformer(input_vocab_size=None,
   # masks on the stack. This causes jax to error, even though the so-called
   # "gradient" wrt the masks is never actually computed.
   # TODO(kitaev): remove this hack.
-  if fastmath.backend_name() == 'jax':
+  if fastmath.is_backend(fastmath.Backend.JAX):
     jax.api._check_inexact_input_vjp = lambda x: None  # pylint: disable=protected-access
 
   def PositionalEncoder(vocab_size, mode):  # tokens --> vectors
@@ -783,7 +781,7 @@ def ReformerNoEncDecAttention(input_vocab_size,
   # masks on the stack. This causes jax to error, even though the so-called
   # "gradient" wrt the masks is never actually computed.
   # TODO(kitaev): remove this hack.
-  if fastmath.backend_name() == 'jax':
+  if fastmath.is_backend(fastmath.Backend.JAX):
     jax.api._check_inexact_input_vjp = lambda x: None  # pylint: disable=protected-access
 
   def PositionalEncoder(vocab_size, mode):  # tokens --> vectors

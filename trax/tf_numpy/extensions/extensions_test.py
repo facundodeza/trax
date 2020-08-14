@@ -35,11 +35,9 @@ flags.DEFINE_bool("requires_tpu", False, "Requires TPU.")
 
 
 def generate_params_inputs_targets(num_examples=1000):
-  params = (tf_np.asarray(tf.constant(5.)),
-            tf_np.asarray(tf.constant(0.)))
+  params = (tf_np.asarray(tf.constant(5.)), tf_np.asarray(tf.constant(0.)))
 
-  params_true = (tf_np.asarray(tf.constant(3.)),
-                 tf_np.asarray(tf.constant(2.)))
+  params_true = (tf_np.asarray(tf.constant(3.)), tf_np.asarray(tf.constant(2.)))
 
   inputs = tf_np.asarray(tf.random.normal(shape=[num_examples]))
   noise = tf_np.asarray(tf.random.normal(shape=[num_examples]))
@@ -75,10 +73,32 @@ def to_tf(a):
   return tf.nest.map_structure(lambda x: x.data, a)
 
 
+def to_np(a):
+  return tf.nest.map_structure(tf_np.asarray, a)
+
+
+def to_tf_fn(f):
+  return lambda *args: to_tf(f(*to_np(args)))
+
+
+def scan_reference(f, init, xs):
+  carry = init
+  ys = []
+  for x in xs:
+    (carry, y) = f(carry, x)
+    ys.append(tf_np.reshape(y, (1,) + y.shape))
+  ys = tf_np.concatenate(ys, 0)
+  return carry, ys
+
+
+def spec(*args):
+  return tf.TensorSpec(args, tf.float32)
+
+
 class ExtensionsTest(tf.test.TestCase, parameterized.TestCase):
 
   def __init__(self, methodName="runTest"):  # pylint: disable=invalid-name
-    super(ExtensionsTest, self).__init__(methodName)
+    super().__init__(methodName)
     physical_devices = tf.config.experimental.list_physical_devices("CPU")
     tf.config.experimental.set_virtual_device_configuration(
         physical_devices[0], [
@@ -125,14 +145,8 @@ class ExtensionsTest(tf.test.TestCase, parameterized.TestCase):
 
   @parameterized.named_parameters([
       (  # pylint: disable=g-complex-comprehension
-          (
-              "_%s_%s_%s" % (
-                  decorator_id,
-                  x_struct,
-                  y_struct)).replace(" ", "").replace("None", ""),
-          decorator,
-          x_struct,
-          y_struct)
+          ("_%s_%s_%s" % (decorator_id, x_struct, y_struct)).replace(
+              " ", "").replace("None", ""), decorator, x_struct, y_struct)
       for y_struct in [[None, ()], (None, (), [], (None, ((), None)))]
       for x_struct in [(None, ()), (((), ()), [None, None], [], (None, ()))]
       for decorator_id, decorator in enumerate([lambda f: f, extensions.jit])
@@ -392,6 +406,135 @@ class ExtensionsTest(tf.test.TestCase, parameterized.TestCase):
             strides=[2, 3],
         ))
 
+  def assertDTypesEqual(self, a, b):
+    get_dtype = lambda t: t.dtype
+    self.assertEqual(tf.nest.map_structure(get_dtype, a),
+                     tf.nest.map_structure(get_dtype, b))
+
+  @parameterized.named_parameters(
+      (f"_{jit_scan}_{jit_f}", jit_scan, jit_f)  # pylint: disable=g-complex-comprehension
+      for jit_f in [False, True]
+      for jit_scan in [False, True])
+  def testScanImpl(self, jit_scan, jit_f):
+    rng = np.random.RandomState(0)
+
+    d = rng.randn(2)
+    def f(c, a):
+      assert a.shape == (3,)
+      assert c.shape == (4,)
+      b = tf_np.cos(tf_np.sum(tf_np.sin(a)) + tf_np.sum(tf_np.cos(c)) +
+                    tf_np.sum(tf_np.tan(d)))
+      c = tf_np.sin(c * b)
+      assert b.shape == ()  # pylint: disable=g-explicit-bool-comparison
+      return c, b
+
+    if jit_f:
+      f = extensions.jit(f)
+
+    if jit_scan:
+      scan = extensions.jit(extensions.scan, (0,))
+    else:
+      scan = extensions.scan
+
+    xs = rng.randn(5, 3)
+    c = rng.randn(4)
+
+    ans = scan(f, c, xs)
+    expected = scan_reference(f, c, xs)
+    self.assertDTypesEqual(expected, ans)
+    self.assertAllClose(expected, ans)
+
+  def testScanStruct(self):
+    rng = np.random.RandomState(0)
+
+    d = rng.randn(2)
+    def f(c_g, a_e_h):
+      c, g = c_g
+      a, e, h = a_e_h
+      assert a.shape == (3,)
+      assert e.shape == ()  # pylint: disable=g-explicit-bool-comparison
+      assert c.shape == (4,)
+      assert g.shape == (2,)
+      b = tf_np.cos(tf_np.sum(tf_np.sin(a)) + tf_np.sum(tf_np.cos(c)) +
+                    tf_np.sum(tf_np.tan(d)))
+      f = tf_np.cos(a)
+      c = tf_np.sin(c * b)
+      g = tf_np.sin(g * b)
+      assert b.shape == ()  # pylint: disable=g-explicit-bool-comparison
+      assert f.shape == (3,)
+      return [c, g], (b, f, h)
+
+    xs = (rng.randn(5, 3), rng.randn(5), None)
+    init = [rng.randn(4), rng.randn(2)]
+
+    c_g, b_f_h = extensions.scan(f, init, xs)
+    self.assertIsInstance(c_g, list)
+    self.assertIsInstance(b_f_h, tuple)
+    c, g = c_g
+    b, f, h = b_f_h
+    self.assertEqual((4,), c.shape)
+    self.assertEqual((2,), g.shape)
+    self.assertEqual((5,), b.shape)
+    self.assertEqual((5, 3), f.shape)
+    self.assertIsNone(h)
+
+  @parameterized.named_parameters(
+      (f"_{jit_scan}_{jit_f}", jit_scan, jit_f)  # pylint: disable=g-complex-comprehension
+      for jit_f in [False, True]
+      for jit_scan in [False, True])
+  def testScanGrad(self, jit_scan, jit_f):
+    rng = np.random.RandomState(0)
+
+    d = rng.randn(2)
+    def f(c, a):
+      assert a.shape == (3,)
+      assert c.shape == (4,)
+      b = (tf_np.sum(tf_np.sin(a)) + tf_np.sum(tf_np.sin(c)) +
+           tf_np.sum(tf_np.sin(d)))
+      c = tf_np.sin(c * b)
+      assert b.shape == ()  # pylint: disable=g-explicit-bool-comparison
+      return c, b
+
+    if jit_f:
+      f = extensions.jit(f)
+
+    if jit_scan:
+      scan = extensions.jit(extensions.scan, static_argnums=(0,))
+    else:
+      scan = extensions.scan
+
+    xs = tf_np.asarray(rng.randn(5, 3))
+    c = tf_np.asarray(rng.randn(4))
+
+    def losses(scan, c, xs):
+      c, ys = scan(f, c, xs)
+      return tf_np.concatenate(tf.nest.flatten(tf.nest.map_structure(
+          lambda a: tf_np.reshape(a, [-1]), (c, ys))))
+    def loss(scan, c, xs):
+      return tf_np.sum(losses(scan, c, xs))
+
+    ans = extensions.grad(functools.partial(loss, scan))(c, xs)
+    expected = extensions.grad(functools.partial(loss, scan_reference))(c, xs)
+    self.assertDTypesEqual(expected, ans)
+    self.assertAllClose(expected, ans)
+
+    theoretical, numerical = tf.test.compute_gradient(
+        to_tf_fn(functools.partial(losses, scan)), (c, xs))
+    self.assertAllClose(theoretical, numerical, atol=1e-3, rtol=3e-4)
+
+  @parameterized.named_parameters(
+      (f"_{i}", *args)  # pylint: disable=g-complex-comprehension
+      for i, args in enumerate([
+          (lambda c, x: (c + 1, tf_np.sum(c + x, 0)),
+           [spec(2), spec(4, 3, 2)], [spec(2), spec(4, 2)]),
+          (lambda c, x: (c + 1, tf_np.sum(c + x, 0)),
+           [spec(2), spec(0, 3, 2), 0], [spec(2), spec(0, 2)]),
+      ]))
+  def testScanShape(self, f, inputs, expected_outputs):
+    outputs = extensions.eval_on_shapes(
+        functools.partial(extensions.scan, f), static_argnums=(2,))(*inputs)
+    self.assertAllEqual(expected_outputs, outputs)
+
   def testPrng(self):
     self.assertAllEqual(tf_np.asarray(123, np.int64), extensions.prng(123))
 
@@ -618,6 +761,23 @@ class ExtensionsTest(tf.test.TestCase, parameterized.TestCase):
       f = extensions.pmap(f, devices=devices)
       f = extensions.pmap(f, devices=devices)
       f(data)
+
+  def testVmap(self):
+    fn1 = extensions.vmap(lambda z: z * z)
+
+    x = tf_np.arange(10)
+    self.assertAllClose(x * x, fn1(x))
+
+    y = tf.range(10)
+    np_y = tf_np.asarray(y)
+    output = fn1(y)
+    self.assertIsInstance(output, tf_np.ndarray)
+    self.assertAllClose(np_y * np_y, output)
+
+    fn2 = extensions.vmap(lambda x, y: x + y)
+    x = tf_np.random.randn(10, 3)
+    y = tf_np.random.randn(10, 2, 3)
+    self.assertAllClose(tf_np.expand_dims(x, 1) + y, fn2(x, y))
 
 
 if __name__ == "__main__":

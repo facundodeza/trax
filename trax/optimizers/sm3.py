@@ -23,7 +23,7 @@ from trax.optimizers import base as opt_base
 class SM3(opt_base.Optimizer):
   """SM3 optimizer."""
 
-  def __init__(self, learning_rate, momentum=0.9):  # pylint: disable=useless-super-delegation
+  def __init__(self, learning_rate=0.01, momentum=0.9):  # pylint: disable=useless-super-delegation
     """Create the SM3 optimizer.
 
     Memory-Efficient Adaptive Optimization for Large-Scale Learning.
@@ -33,7 +33,7 @@ class SM3(opt_base.Optimizer):
       learning_rate: a postitive scalar value for the initial learning rate.
       momentum: optional, a positive scalar value for momentum
     """
-    super(SM3, self).__init__(
+    super().__init__(
         learning_rate=learning_rate,
         momentum=momentum,
     )
