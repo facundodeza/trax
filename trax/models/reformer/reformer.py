@@ -665,7 +665,7 @@ def Reformer(input_vocab_size=None,
 
   
   print(template.format('in_encoder', in_encoder.n_in,
-                        'in_encoder', in_encoder.n_out)
+                        'in_encoder', in_encoder.n_out))
 
   if output_vocab_size is None:
     output_vocab_size = input_vocab_size
