@@ -664,7 +664,7 @@ def Reformer(input_vocab_size=None,
       input_vocab_size, mode='eval' if mode == 'predict' else mode)
 
   
-  print(in_encoder)
+  print(in_encoder[0] )
 
   if output_vocab_size is None:
     output_vocab_size = input_vocab_size
