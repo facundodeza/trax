@@ -715,10 +715,10 @@ def Reformer(input_vocab_size=None,
       tl.PositionalEncoding(max_len=max_len, dropout=dropout, mode=mode),
       tl.Dup(), 
       tl.ReversibleSerial(encoder_blocks),
-      tl.Fn('XYAvg', lambda x, y: (x + y) / 2.0 ),
+      tl.Fn('XYAvg', lambda x, y: print(x.shape, y.shape),
       tl.LayerNorm(),
 
-      #encoder,                              # vec_e  mask tok_d .....
+      encoder,                              # vec_e  mask tok_d .....
 
       # Decode.
       tl.Select([2, 0, 1]),                 # tok_d vec_e mask .....
