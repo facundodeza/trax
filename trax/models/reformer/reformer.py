@@ -709,12 +709,11 @@ def Reformer(input_vocab_size=None,
                      tl.Fn('Squeeze',
                            lambda x: jnp.squeeze(x , (1,2)), n_out=1)]),
       #                                     # tok_e mask_e  tok_d 
-	tl.Dense(d_model)),
+      tl.Dense(d_model)),
 
-        tl.Dropout(rate=dropout, shared_axes= [-2] , mode=mode),
-        tl.PositionalEncoding(max_len=max_len, dropout=dropout, mode=mode),
-
-	      tl.Dup(), 
+      tl.Dropout(rate=dropout, shared_axes= [-2] , mode=mode),
+      tl.PositionalEncoding(max_len=max_len, dropout=dropout, mode=mode),
+      tl.Dup(), 
       tl.ReversibleSerial(encoder_blocks),
       tl.Fn('XYAvg', lambda x, y: (x + y) / 2.0 ),
       tl.LayerNorm(),
