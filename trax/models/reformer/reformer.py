@@ -664,7 +664,7 @@ def Reformer(input_vocab_size=None,
       input_vocab_size, mode='eval' if mode == 'predict' else mode)
 
   
-  print(template.format('layer_name_tu_vieja', in_encoder[0] .n_out)
+  print(template.format('layer_name_tu_vieja', in_encoder[0] .n_out))
 
   #if output_vocab_size is None:
     #output_vocab_size = input_vocab_size
