@@ -676,12 +676,14 @@ def Reformer(input_vocab_size=None,
           d_model, d_ff, n_heads, tl.SelfAttention, dropout, ff_activation,
           ff_dropout, mode)
       for _ in range(n_encoder_layers)]
+
+
   # pylint: enable=g-complex-comprehension
 
   encoder = tl.Serial([
-   ##embeding , dropput, position encding
+
       in_encoder,
-      tl.Dup(), #embeding, embeding, droput, pe
+      tl.Dup(), 
       tl.ReversibleSerial(encoder_blocks),
       tl.Fn('XYAvg', lambda x, y: (x + y) / 2.0),
       tl.LayerNorm(),
@@ -700,16 +702,13 @@ def Reformer(input_vocab_size=None,
       # Input: encoder_side_tokens, decoder_side_tokens
       # Copy decoder tokens for use in loss.
 
-      tl.Select([0, 1, 1]),                # tok_e tok_d tok_d vec e
+      tl.Select([0, 1, 1]),                # tok_e tok_d tok_d
 
       tl.Branch([], [tl.PaddingMask(),
                      tl.Fn('Squeeze',
                            lambda x: jnp.squeeze(x , (1,2)), n_out=1)]),
-      #                                     # tok_e mask  tok_d vec_e
+      #                                     # tok_e mask_e  tok_d 
 
-      # Encode.
-
-      #tl.Select([3, 1, 2]),                 # vec_e  mask tok_d
 
       encoder,                              # vec_e  mask tok_d .....
 
