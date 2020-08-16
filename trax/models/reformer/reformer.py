@@ -686,7 +686,7 @@ def Reformer(input_vocab_size=None,
       in_encoder,
       tl.Dup(), 
       tl.ReversibleSerial(encoder_blocks),
-      tl.Fn('XYAvg', lambda x: (x + x) / 2.0),
+      tl.Fn('XYAvg', lambda x: (x + x) ),
       tl.LayerNorm(),
   ])
 
