@@ -698,7 +698,7 @@ def Reformer(input_vocab_size=None,
 
       # Encode.
 
-      tl.Select([3, 1, 2], n_in=4, n_out = 3),                 # vec_e  mask tok_d
+      tl.Select([3, 1, 2]),                 # vec_e  mask tok_d
 
       encoder,                              # vec_e  mask tok_d .....
 
