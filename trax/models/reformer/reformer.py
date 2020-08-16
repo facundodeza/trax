@@ -645,7 +645,7 @@ def Reformer(input_vocab_size=None,
        (tl.Embedding(vocab_size, d_model) if vocab_size is not None
        else tl.Dense(d_model)),
 
-        #tl.Dropout(rate=dropout, shared_axes= [-2] , mode=mode),
+        tl.Dropout(rate=dropout, shared_axes= [-2] , mode=mode),
         tl.PositionalEncoding(max_len=max_len, dropout=dropout, mode=mode),
     ]
 
@@ -686,7 +686,7 @@ def Reformer(input_vocab_size=None,
       in_encoder,
       tl.Dup(), 
       tl.ReversibleSerial(encoder_blocks),
-      tl.Fn('XYAvg', lambda x: (x + x) ),
+      tl.Fn('XYAvg', lambda x, y: (x + y) / 2.0 ),
       tl.LayerNorm(),
   ])
 
@@ -709,9 +709,17 @@ def Reformer(input_vocab_size=None,
                      tl.Fn('Squeeze',
                            lambda x: jnp.squeeze(x , (1,2)), n_out=1)]),
       #                                     # tok_e mask_e  tok_d 
+	tl.Dense(d_model)),
 
+        tl.Dropout(rate=dropout, shared_axes= [-2] , mode=mode),
+        tl.PositionalEncoding(max_len=max_len, dropout=dropout, mode=mode),
 
-      encoder,                              # vec_e  mask tok_d .....
+	      tl.Dup(), 
+      tl.ReversibleSerial(encoder_blocks),
+      tl.Fn('XYAvg', lambda x, y: (x + y) / 2.0 ),
+      tl.LayerNorm(),
+
+      #encoder,                              # vec_e  mask tok_d .....
 
       # Decode.
       tl.Select([2, 0, 1]),                 # tok_d vec_e mask .....
