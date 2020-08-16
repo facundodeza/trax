@@ -664,8 +664,16 @@ def Reformer(input_vocab_size=None,
       input_vocab_size, mode='eval' if mode == 'predict' else mode)
 
   
-  print(template.format('in_encoder', in_encoder.n_in,
-                        'in_encoder', in_encoder.n_out))
+  print(template.format('in_encoder', in_encoder[0] .n_in,
+                        'in_encoder', in_encoder[0].n_out))
+
+
+  print(template.format('in_encoder', in_encoder[1] .n_in,
+                        'in_encoder', in_encoder[1].n_out))
+
+
+  print(template.format('in_encoder', in_encoder[2] .n_in,
+                        'in_encoder', in_encoder[2].n_out))
 
   if output_vocab_size is None:
     output_vocab_size = input_vocab_size
@@ -680,13 +688,14 @@ def Reformer(input_vocab_size=None,
   # pylint: enable=g-complex-comprehension
 
   encoder = tl.Serial([
-
+   ##embeding , dropput, position encding
       in_encoder,
-      tl.Dup(),
+      tl.Dup(), #embeding, embeding, droput, pe
       tl.ReversibleSerial(encoder_blocks),
       tl.Fn('XYAvg', lambda x, y: (x + y) / 2.0),
       tl.LayerNorm(),
   ])
+
   if mode == 'predict':
     encoder = tl.Cache(encoder)
 
