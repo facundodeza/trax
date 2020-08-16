@@ -689,11 +689,7 @@ def Reformer(input_vocab_size=None,
       # Input: encoder_side_tokens, decoder_side_tokens
       # Copy decoder tokens for use in loss.
 
-      tl.Select([0, 1, 1]),                # tok_e tok_ tok_d 
-
-      tl.Fn('Squeeze', lambda x: jnp.sum(x, axis=2), n_out=1), # tok_e tok_e_ tok_e
-
-      tl.Select([1, 2, 2, 0], n_in = 3, n_out = 4),
+      tl.Select([0, 1, 1, 2]),                # tok_e tok_d tok_d 
 
       tl.Branch([], [tl.PaddingMask(),
                      tl.Fn('Squeeze',
