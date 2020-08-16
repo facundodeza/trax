@@ -637,7 +637,7 @@ def Reformer(input_vocab_size=None,
         (tl.Embedding(vocab_size, d_model) if vocab_size is not None
        else tl.Dense(d_model)),
 
-        tl.Dropout(rate=dropout, shared_axes= None, mode=mode),
+        tl.Dropout(rate=dropout, shared_axes= [-2] , mode=mode),
         tl.PositionalEncoding(max_len=max_len, dropout=dropout, mode=mode),
     ]
 
@@ -689,7 +689,7 @@ def Reformer(input_vocab_size=None,
       # Input: encoder_side_tokens, decoder_side_tokens
       # Copy decoder tokens for use in loss.
 
-      tl.Select([0, 1, 1, 2]),                # tok_e tok_d tok_d 
+      tl.Select([0, 1, 1, 2]),                # tok_e tok_d tok_d vec e
 
       tl.Branch([], [tl.PaddingMask(),
                      tl.Fn('Squeeze',
