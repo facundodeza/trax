@@ -697,7 +697,7 @@ def Reformer(input_vocab_size=None,
 
       tl.Branch([], [tl.PaddingMask(),
                      tl.Fn('Squeeze',
-                           lambda x: jnp.squeeze(jnp.sum(x, axis=2) , (1,2)), n_out=1)]),
+                           lambda x: jnp.squeeze(x , (1,2)), n_out=1)]),
       #                                     # tok_e mask  tok_d vec_e
 
       # Encode.
