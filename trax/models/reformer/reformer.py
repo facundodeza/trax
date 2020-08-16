@@ -684,8 +684,6 @@ def Reformer(input_vocab_size=None,
       
       
       in_encoder,
-
-	print(tl.Select([0, 1, 2])),
       tl.Dup(), 
       tl.ReversibleSerial(encoder_blocks),
       tl.Fn('XYAvg', lambda x, y: (x + y) / 2.0),
@@ -798,22 +796,34 @@ def ReformerNoEncDecAttention(input_vocab_size,
   if fastmath.is_backend(fastmath.Backend.JAX):
     jax.api._check_inexact_input_vjp = lambda x: None  # pylint: disable=protected-access
 
+  #def PositionalEncoder(vocab_size, mode):  # tokens --> vectors
+   # if not axial_pos_shape:
+    #  positional_encoding = tl.PositionalEncoding(
+     #     max_len=max_len, dropout=dropout, mode=mode)
+    #else:
+      #assert d_axial_pos_embs is not None
+      #positional_encoding = tl.AxialPositionalEncoding(
+          #shape=axial_pos_shape, d_embs=d_axial_pos_embs,
+          #dropout_broadcast_dims=tuple(range(1, len(axial_pos_shape) + 1)),
+          #dropout=dropout, mode=mode)
+
+    #return [
+        #tl.Embedding(vocab_size, d_model),
+        #tl.Dropout(rate=dropout, shared_axes=[-2], mode=mode),
+        #positional_encoding,
+    #]
   def PositionalEncoder(vocab_size, mode):  # tokens --> vectors
-    if not axial_pos_shape:
-      positional_encoding = tl.PositionalEncoding(
-          max_len=max_len, dropout=dropout, mode=mode)
-    else:
-      assert d_axial_pos_embs is not None
-      positional_encoding = tl.AxialPositionalEncoding(
-          shape=axial_pos_shape, d_embs=d_axial_pos_embs,
-          dropout_broadcast_dims=tuple(range(1, len(axial_pos_shape) + 1)),
-          dropout=dropout, mode=mode)
+    # TODO(kitaev): axial positional encoding is better for very long sequences.
 
     return [
-        tl.Embedding(vocab_size, d_model),
-        tl.Dropout(rate=dropout, shared_axes=[-2], mode=mode),
-        positional_encoding,
+       (tl.Embedding(vocab_size, d_model) if vocab_size is not None
+       else tl.Dense(d_model)),
+
+        tl.Dropout(rate=dropout, shared_axes= None , mode=mode),
+        tl.PositionalEncoding(max_len=max_len, dropout=dropout, mode=mode),
     ]
+
+
 
   # TODO(kitaev): The regular trax Transformer shares vocab embeddings and
   # position embeddings between the encoder and decoder if output_vocab_size is
