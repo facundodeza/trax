@@ -621,7 +621,15 @@ def Reformer(input_vocab_size=None,
   Returns:
     A Reformer model as a layer that maps from a target, source pair to
     activations over a vocab set.
+
   """
+
+  template = ('{}.n_in:  {}\n'
+              '{}.n_out: {}\n'
+              '{}.sublayers: {}\n'
+              '{}.weights:    {}\n')
+
+
   # The current API for custom gradients assumes that a layer must be
   # differentiable wrt all of its inputs, but the Transformer puts bool-dtype
   # masks on the stack. This causes jax to error, even though the so-called
@@ -655,6 +663,9 @@ def Reformer(input_vocab_size=None,
   in_encoder = PositionalEncoder(
       input_vocab_size, mode='eval' if mode == 'predict' else mode)
 
+  
+  print(template.format('in_encoder', in_encoder.n_in,
+                        'in_encoder', in_encoder.n_out)
 
   if output_vocab_size is None:
     output_vocab_size = input_vocab_size
