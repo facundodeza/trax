@@ -638,16 +638,16 @@ def Reformer(input_vocab_size=None,
   if fastmath.is_backend(fastmath.Backend.JAX):
     jax.api._check_inexact_input_vjp = lambda x: None  # pylint: disable=protected-access
 
-  def PositionalEncoder(vocab_size, mode):  # tokens --> vectors
+  #def PositionalEncoder(vocab_size, mode):  # tokens --> vectors
     # TODO(kitaev): axial positional encoding is better for very long sequences.
 
-    return [
-       (tl.Embedding(vocab_size, d_model) if vocab_size is not None
-       else tl.Dense(d_model)),
+    #return [
+       #(tl.Embedding(vocab_size, d_model) if vocab_size is not None
+       #else tl.Dense(d_model)),
 
-        tl.Dropout(rate=dropout, shared_axes= [-2] , mode=mode),
-        tl.PositionalEncoding(max_len=max_len, dropout=dropout, mode=mode),
-    ]
+        #tl.Dropout(rate=dropout, shared_axes= [-2] , mode=mode),
+        #tl.PositionalEncoding(max_len=max_len, dropout=dropout, mode=mode),
+    #]
 
 
   # TODO(kitaev): The regular trax Transformer shares vocab embeddings and
