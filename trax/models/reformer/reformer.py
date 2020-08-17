@@ -638,7 +638,7 @@ def Reformer(input_vocab_size=None,
   if fastmath.is_backend(fastmath.Backend.JAX):
     jax.api._check_inexact_input_vjp = lambda x: None  # pylint: disable=protected-access
 
-  def PositionalEncoder(vocab_size = None, mode):  # tokens --> vectors
+  def PositionalEncoder(vocab_size, mode):  # tokens --> vectors
      #TODO(kitaev): axial positional encoding is better for very long sequences.
 
 
