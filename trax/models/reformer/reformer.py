@@ -640,15 +640,14 @@ def Reformer(input_vocab_size=None,
 
   def PositionalEncoder(vocab_size, mode):  # tokens --> vectors
      #TODO(kitaev): axial positional encoding is better for very long sequences.
-    (tl.Embedding(vocab_size, d_model) if vocab_size is not None
-    else tl.Dense(d_model)),
-
-    tl.Dropout(rate=dropout, shared_axes= [-2] , mode=mode),
-    posenc = tl.PositionalEncoding(max_len=max_len, dropout=dropout, mode=mode),
 
 
     return [
-      posenc,
+       (tl.Embedding(vocab_size, d_model) if vocab_size is not None
+       else tl.Dense(d_model)),
+
+        tl.Dropout(rate=dropout, shared_axes= [-2] , mode=mode),
+        tl.PositionalEncoding(max_len=max_len, dropout=dropout, mode=mode),
     ]
 
 
