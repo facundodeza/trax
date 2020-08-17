@@ -638,16 +638,16 @@ def Reformer(input_vocab_size=None,
   if fastmath.is_backend(fastmath.Backend.JAX):
     jax.api._check_inexact_input_vjp = lambda x: None  # pylint: disable=protected-access
 
-  #def PositionalEncoder(vocab_size, mode):  # tokens --> vectors
-    # TODO(kitaev): axial positional encoding is better for very long sequences.
+  	def PositionalEncoder(vocab_size, mode):  # tokens --> vectors
+     TODO(kitaev): axial positional encoding is better for very long sequences.
 
-    #return [
-       #(tl.Embedding(vocab_size, d_model) if vocab_size is not None
-       #else tl.Dense(d_model)),
+    return [
+       (tl.Embedding(vocab_size, d_model) if vocab_size is not None
+       else tl.Dense(d_model)),
 
-        #tl.Dropout(rate=dropout, shared_axes= [-2] , mode=mode),
-        #tl.PositionalEncoding(max_len=max_len, dropout=dropout, mode=mode),
-    #]
+        tl.Dropout(rate=dropout, shared_axes= [-2] , mode=mode),
+        tl.PositionalEncoding(max_len=max_len, dropout=dropout, mode=mode),
+    ]
 
 
   # TODO(kitaev): The regular trax Transformer shares vocab embeddings and
@@ -709,15 +709,6 @@ def Reformer(input_vocab_size=None,
                      tl.Fn('Squeeze',
                            lambda x: jnp.squeeze(x , (1,2)), n_out=1)]),
       #                                     # tok_e mask_e  tok_d 
-      tl.Dense(d_model)),
-
-      tl.Dropout(rate=dropout, shared_axes= [-2] , mode=mode),
-      tl.PositionalEncoding(max_len=max_len, dropout=dropout, mode=mode),
-      tl.Dup(), 
-      tl.ReversibleSerial(encoder_blocks),
-      tl.Fn('XYAvg', lambda x, y: print(x.shape, y.shape),
-      tl.LayerNorm(),
-
       encoder,                              # vec_e  mask tok_d .....
 
       # Decode.
