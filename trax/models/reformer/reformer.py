@@ -710,7 +710,11 @@ def Reformer(input_vocab_size=None,
                      tl.Fn('Squeeze',
                            lambda x: jnp.squeeze(x , (1,2)), n_out=1)]),
       #                                     # tok_e mask_e  tok_d 
+      print(tl.Select([0])[0].shape)
+	
       encoder,                              # vec_e  mask tok_d .....
+
+
 
       # Decode.
       tl.Select([2, 0, 1]),                 # tok_d vec_e mask .....
