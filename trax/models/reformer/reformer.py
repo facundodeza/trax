@@ -638,7 +638,7 @@ def Reformer(input_vocab_size=None,
   if fastmath.is_backend(fastmath.Backend.JAX):
     jax.api._check_inexact_input_vjp = lambda x: None  # pylint: disable=protected-access
 
-  def PositionalEncoder(mode, vocab_size = None):  # tokens --> vectors
+  def PositionalEncoder(vocab_size = None, mode):  # tokens --> vectors
      #TODO(kitaev): axial positional encoding is better for very long sequences.
 
 
@@ -661,15 +661,15 @@ def Reformer(input_vocab_size=None,
   # Mode 'predict' means that the decoder should be run one token at a time.
   # The encoder only ever runs over full sequences, which is why it's switched
   # to 'eval' mode instead.
-  in_encoder = PositionalEncoder(
-       mode='eval' if mode == 'predict' else mode, input_vocab_size)
+  in_encoder = PositionalEncoder( input_vocab_size,
+       mode='eval' if mode == 'predict' else mode)
 
   
   #print(template.format('layer_name_tu_vieja', in_encoder.n_out))
 
   #if output_vocab_size is None:
     #output_vocab_size = input_vocab_size
-  out_encoder = PositionalEncoder(mode, output_vocab_size)
+  out_encoder = PositionalEncoder(output_vocab_size, mode)
 
   # pylint: disable=g-complex-comprehension
   encoder_blocks = [
