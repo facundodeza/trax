@@ -643,9 +643,9 @@ def Reformer(input_vocab_size=None,
 
 
     return [
-       (tl.Embedding(vocab_size, d_model) if vocab_size is not None
-       else tl.Dense(d_model, use_bias=False)),
-
+       #(tl.Embedding(vocab_size, d_model) if vocab_size is not None
+       #else tl.Dense(d_model, use_bias=False)),
+	tl.Embedding(vocab_size, d_model), 
         tl.Dropout(rate=dropout, shared_axes= [-2] , mode=mode),
         tl.PositionalEncoding(max_len=max_len, dropout=dropout, mode=mode),
     ]
